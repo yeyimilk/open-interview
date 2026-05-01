@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev curl \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY backend/libs /app/backend/libs
+COPY backend/services/gateway /app/backend/services/gateway
+COPY config /app/config
+
+RUN pip install --no-cache-dir \
+    /app/backend/libs/openinterview_schemas \
+    /app/backend/libs/openinterview_logging \
+    /app/backend/libs/openinterview_db \
+ && pip install --no-cache-dir /app/backend/services/gateway
+
+EXPOSE 9000
+CMD ["python", "-m", "openinterview_gateway"]

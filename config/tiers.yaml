@@ -1,0 +1,9 @@
+# Rate limits applied only when using shared (admin) keys.
+# BYO-key requests are unlimited but still logged.
+tiers:
+  free:
+    rate_limit_rpm: 20
+  paid:
+    rate_limit_rpm: 120
+  admin:
+    rate_limit_rpm: 600

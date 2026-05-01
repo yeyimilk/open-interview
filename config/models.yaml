@@ -1,0 +1,29 @@
+# Logical model catalog. The Gateway resolves logical names to provider/endpoint.
+# All providers must be OpenAI-compatible.
+chat:
+  default: chat-strong
+  models:
+    chat-strong:
+      provider: openai
+      endpoint: https://api.openai.com/v1
+      model_id: gpt-4o
+    chat-fast:
+      provider: openai
+      endpoint: https://api.openai.com/v1
+      model_id: gpt-4o-mini
+    chat-local:
+      provider: ollama
+      endpoint: http://ollama:11434/v1
+      model_id: qwen2.5-coder:32b
+
+embedding:
+  default: embed-default
+  models:
+    embed-default:
+      provider: openai
+      endpoint: https://api.openai.com/v1
+      model_id: text-embedding-3-small
+    embed-local:
+      provider: ollama
+      endpoint: http://ollama:11434/v1
+      model_id: nomic-embed-text

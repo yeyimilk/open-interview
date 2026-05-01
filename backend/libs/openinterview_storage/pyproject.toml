@@ -1,0 +1,20 @@
+[project]
+name = "openinterview-storage"
+version = "0.1.0"
+description = "Blob storage abstraction for Open Interview"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+s3 = ["aioboto3>=12.3"]
+azure = ["azure-storage-blob>=12.19", "aiohttp>=3.9"]
+gcs = ["google-cloud-storage>=2.16"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

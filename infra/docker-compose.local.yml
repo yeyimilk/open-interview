@@ -1,0 +1,101 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openinterview
+      POSTGRES_PASSWORD: openinterview
+      POSTGRES_DB: openinterview
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openinterview"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  chroma:
+    image: chromadb/chroma:0.5.0
+    ports: ["8001:8000"]
+    volumes:
+      - chromadata:/chroma/chroma
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.gateway
+    env_file:
+      - ../.env
+    environment:
+      MODELS_YAML_PATH: /app/config/models.yaml
+      TIERS_YAML_PATH: /app/config/tiers.yaml
+    ports: ["9100:9000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  core:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.core
+    env_file:
+      - ../.env
+    environment:
+      OPENINTERVIEW_DATA_DIR: /data
+      DATABASE_URL: postgresql+asyncpg://openinterview:openinterview@postgres:5432/openinterview
+      CHROMA_URL: http://chroma:8000
+      GATEWAY_URL: http://gateway:9000
+      REDIS_URL: redis://redis:6379/0
+    ports: ["8000:8000"]
+    volumes:
+      - localdata:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+
+  workers:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.workers
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://openinterview:openinterview@postgres:5432/openinterview
+      REDIS_URL: redis://redis:6379/0
+      GATEWAY_URL: http://gateway:9000
+      OPENINTERVIEW_DATA_DIR: /data
+    volumes:
+      - localdata:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.web
+    environment:
+      VITE_API_URL: http://core:8000
+    ports: ["5173:5173"]
+    depends_on:
+      - core
+
+volumes:
+  pgdata:
+  chromadata:
+  localdata:

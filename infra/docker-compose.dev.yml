@@ -1,0 +1,39 @@
+# Dev profile: only stateful infra in Docker.
+# Run core / gateway / workers / web on the host for native hot reload.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openinterview
+      POSTGRES_PASSWORD: openinterview
+      POSTGRES_DB: openinterview
+    # Host port 55432 to avoid colliding with native Postgres on 5432.
+    ports: ["55432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openinterview"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    # Host port 56379 to avoid colliding with other Redis instances on 6379.
+    ports: ["56379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  chroma:
+    image: chromadb/chroma:0.5.0
+    ports: ["8001:8000"]
+    volumes:
+      - chromadata:/chroma/chroma
+
+volumes:
+  pgdata:
+  chromadata:
