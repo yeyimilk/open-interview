@@ -8,6 +8,13 @@ from .models.resume import ClaimMapping, Resume
 from .models.qa import QAItem, QASet
 from .models.chat import ChatMessage, ChatSession, InterviewEvaluation
 from .models.memory import EpisodicMemory, LongTermMemory
+from .models.messenger import (
+    MessengerActiveSession,
+    MessengerFilter,
+    MessengerInboundDedup,
+    MessengerLink,
+    MessengerPairToken,
+)
 
 __all__ = [
     "Base",
@@ -30,4 +37,9 @@ __all__ = [
     "InterviewEvaluation",
     "EpisodicMemory",
     "LongTermMemory",
+    "MessengerLink",
+    "MessengerPairToken",
+    "MessengerActiveSession",
+    "MessengerInboundDedup",
+    "MessengerFilter",
 ]

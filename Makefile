@@ -21,10 +21,10 @@ PYTEST := .venv/bin/pytest
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup frontend-install \
+.PHONY: help setup frontend-install wabridge-install \
         infra infra-down infra-reset infra-logs \
         _kill-host down down-all \
-        core gateway workers web all \
+        core gateway workers web wabridge all \
         test fmt
 
 help:
@@ -40,6 +40,7 @@ help:
 	@echo "  gateway      - run gateway service with hot reload"
 	@echo "  workers      - run arq worker"
 	@echo "  web          - run Vite dev server"
+	@echo "  wabridge     - run WhatsApp bridge (Baileys, port 9300)"
 	@echo "  all          - run infra + core + gateway + workers + web in one terminal"
 	@echo "                 (uses overmind / hivemind / honcho — auto-detected)"
 	@echo "  test         - run all backend tests"
@@ -48,7 +49,7 @@ help:
 
 # ---------- setup ----------
 
-setup: .venv frontend-install
+setup: .venv frontend-install wabridge-install
 	@echo "Setup complete. Copy config/env.dev.example to .env if you haven't yet:"
 	@echo "  cp config/env.dev.example .env"
 
@@ -66,6 +67,9 @@ setup: .venv frontend-install
 
 frontend-install:
 	cd frontend/app && npm install
+
+wabridge-install:
+	cd backend/services/whatsapp_bridge && npm install
 
 # ---------- infra ----------
 
@@ -91,6 +95,7 @@ _kill-host:
 	-@pkill -f "python -m openinterview_gateway" 2>/dev/null || true
 	-@pkill -f "arq openinterview_workers.worker.WorkerSettings" 2>/dev/null || true
 	-@pkill -f "vite" 2>/dev/null || true
+	-@pkill -f "tsx watch src/server.ts" 2>/dev/null || true
 	@echo "Host dev processes stopped (if any were running)."
 
 down: _kill-host infra-down
@@ -120,6 +125,9 @@ workers:
 
 web:
 	cd frontend/app && npm run dev
+
+wabridge:
+	cd backend/services/whatsapp_bridge && npm run dev
 
 # ---------- run everything in one terminal ----------
 

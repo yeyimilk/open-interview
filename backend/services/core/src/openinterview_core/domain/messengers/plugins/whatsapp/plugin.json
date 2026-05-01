@@ -1,0 +1,29 @@
+{
+  "id": "whatsapp",
+  "name": "WhatsApp",
+  "description": "Connects to your personal WhatsApp number via a local bridge — pair by scanning the QR code from WhatsApp → Linked Devices.",
+  "channels": ["whatsapp"],
+  "entry": "openinterview_core.domain.messengers.plugins.whatsapp:build_plugin",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "bridge_url": { "type": "string", "default": "http://127.0.0.1:9300" },
+      "service_token": { "type": "string", "description": "Shared bearer for the bridge HTTP API" },
+      "webhook_secret": { "type": "string", "description": "HMAC secret used to verify inbound webhook posts from the bridge" }
+    }
+  },
+  "capabilities": {
+    "streaming": false,
+    "max_outbound_chars": 4000,
+    "inbound_voice": false,
+    "inbound_image": false,
+    "rich_buttons": false,
+    "ack_window_s": 20,
+    "pair_link_scheme": "qr-only",
+    "supports_typing": false
+  },
+  "activation": {
+    "on_startup": false
+  }
+}

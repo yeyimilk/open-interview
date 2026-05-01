@@ -55,6 +55,56 @@ class MentorAgent:
 
     # ------- helpers -------
 
+    def _build_general_messages(
+        self,
+        *,
+        recalled,
+        workspace_brief: str,
+        user_input: str,
+    ) -> list[ChatMessageDTO]:
+        """Build messages for /chat (general) mode — a plain assistant
+        with workspace awareness but no mentor framing and no tools.
+
+        The system prompt is intentionally tight so the model gives ONE
+        focused answer per user turn instead of self-prompting like a
+        coach (e.g. "let me know if you want me to dive deeper into X" →
+        followed by it deciding to dive deeper anyway).
+        """
+        ctx_lines: list[str] = []
+        if workspace_brief:
+            ctx_lines.append(f"USER WORKSPACE: {workspace_brief}")
+        if recalled and recalled.long_term:
+            ctx_lines.append("\nWHAT WE KNOW ABOUT THE USER:")
+            for lt in recalled.long_term[:5]:
+                ctx_lines.append(f"- [{lt.kind}] {lt.content}")
+
+        system = (
+            "You are a helpful general-purpose assistant accessed over a "
+            "messaging app (WhatsApp). Answer the user's question directly "
+            "and concisely. Do NOT propose your own follow-up tasks, do "
+            "NOT continue elaborating after a complete answer, and do NOT "
+            "ask the user multiple questions back. One focused reply per "
+            "turn. If the user references their workspace (projects, "
+            "resumes, sessions), acknowledge what's there but don't browse "
+            "code unless they ask explicitly. Keep replies short enough "
+            "for a phone screen unless the user asks for depth."
+        )
+        if ctx_lines:
+            system = system + "\n\n" + "\n".join(ctx_lines)
+
+        history: list[ChatMessageDTO] = [
+            ChatMessageDTO(role="system", content=system)
+        ]
+        for m in (recalled.working_messages if recalled else []):
+            role = m.get("role", "user")
+            if role not in ("user", "assistant", "system"):
+                role = "user"
+            history.append(
+                ChatMessageDTO(role=role, content=m.get("content", ""))
+            )
+        history.append(ChatMessageDTO(role="user", content=user_input))
+        return history
+
     def _build_messages(
         self,
         *,
@@ -144,6 +194,43 @@ class MentorAgent:
             ]
         except Exception:
             return []
+
+    # ------- general /chat entry -------
+
+    async def general_stream(
+        self,
+        *,
+        user_id: UUID,
+        session_id: UUID | None,
+        workspace_brief: str,
+        user_input: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Plain LLM chat with memory recall but no project tools and
+        no mentor framing. Used by /chat (general) mode."""
+        recalled = await self._retriever.recall(
+            user_id=user_id, session_id=session_id, query=user_input
+        )
+        messages = self._build_general_messages(
+            recalled=recalled,
+            workspace_brief=workspace_brief,
+            user_input=user_input,
+        )
+        chunks: list[str] = []
+        try:
+            async for piece in self._gw.chat_stream(
+                user_id=user_id,
+                logical_model=self._model,
+                messages=messages,
+            ):
+                if not piece:
+                    continue
+                chunks.append(piece)
+                yield {"type": "token", "content": piece}
+        except Exception as e:  # noqa: BLE001
+            err = f"(LLM error: {e})"
+            chunks.append(err)
+            yield {"type": "token", "content": err}
+        yield {"type": "done", "content": "".join(chunks)}
 
     # ------- main entry -------
 

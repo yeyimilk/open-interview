@@ -15,6 +15,7 @@ from .api.v1 import health as health_v1
 from .api.v1 import interviewer as interviewer_v1
 from .api.v1 import me as me_v1
 from .api.v1 import mentor as mentor_v1
+from .api.v1 import messaging as messaging_v1
 from .api.v1 import projects as projects_v1
 from .api.v1 import qa as qa_v1
 from .api.v1 import resumes as resumes_v1
@@ -26,6 +27,43 @@ from .security import SecretBox, TokenIssuer
 log = get_logger(__name__)
 
 
+async def _dev_patch_columns(conn) -> None:
+    """Idempotent dev-only schema patches for new columns.
+
+    `Base.metadata.create_all` only creates missing *tables*; it never
+    ALTERs an existing one. For local dev we don't have Alembic wired in,
+    so we apply a couple of small patches here. Each guards itself by
+    introspecting `information_schema` (Postgres) / `PRAGMA` (SQLite).
+    """
+    from sqlalchemy import text
+
+    dialect = conn.dialect.name
+
+    async def _has_column(table: str, column: str) -> bool:
+        if dialect == "postgresql":
+            r = await conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = :t AND column_name = :c"
+                ),
+                {"t": table, "c": column},
+            )
+            return r.first() is not None
+        if dialect == "sqlite":
+            r = await conn.execute(text(f"PRAGMA table_info({table})"))
+            return any(row[1] == column for row in r.fetchall())
+        return True  # unknown dialect — let it fail loudly downstream
+
+    if not await _has_column("messenger_links", "filter_mode"):
+        await conn.execute(
+            text(
+                "ALTER TABLE messenger_links "
+                "ADD COLUMN filter_mode VARCHAR(16) "
+                "NOT NULL DEFAULT 'dms_only'"
+            )
+        )
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     settings: Settings = app.state.settings
@@ -34,10 +72,42 @@ async def _lifespan(app: FastAPI):
     if settings.openinterview_env == "local":
         async with db.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Lightweight column patch-ups for dev. `create_all` only adds
+            # missing tables; it does NOT add new columns to existing ones.
+            await _dev_patch_columns(conn)
+
+    # Messenger runtime: kernel + plugin registry. Plugins discovered from
+    # `domain/messengers/plugins/<id>/plugin.json`.
+    try:
+        from .domain.messengers.wiring import build_messenger_runtime
+
+        kernel, registry = build_messenger_runtime(app)
+        app.state.messenger_kernel = kernel
+        app.state.messenger_registry = registry
+        for manifest, plugin in registry.all():
+            try:
+                router = plugin.webhook_router()
+                app.include_router(router, prefix=f"/webhooks/{manifest.id}")
+            except Exception as e:  # pragma: no cover - logged
+                log.error(
+                    "messenger_router_mount_failed",
+                    id=manifest.id, error=str(e),
+                )
+    except Exception as e:  # pragma: no cover - logged
+        log.error("messenger_wiring_failed", error=str(e))
+        app.state.messenger_kernel = None
+        app.state.messenger_registry = None
+
     log.info("core_startup", env=settings.openinterview_env)
     try:
         yield
     finally:
+        if getattr(app.state, "messenger_registry", None) is not None:
+            for _, plugin in app.state.messenger_registry.all():
+                try:
+                    await plugin.shutdown()
+                except Exception:
+                    pass
         await db.dispose()
         log.info("core_shutdown")
 
@@ -68,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(mentor_v1.router, prefix=api_prefix)
     app.include_router(interviewer_v1.router, prefix=api_prefix)
     app.include_router(audio_v1.router, prefix=api_prefix)
+    app.include_router(messaging_v1.router, prefix=api_prefix)
 
     # Singleton GatewayClient (used by domain services)
     from .infra.gateway_client import GatewayClient

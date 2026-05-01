@@ -419,7 +419,80 @@ export const api = {
     request<InterviewEvaluationOut>(
       `/interviewer/sessions/${id}/evaluation`
     ),
+
+  // messaging (whatsapp / future channels)
+  listMessagingPlugins: () =>
+    request<MessagingPluginInfo[]>("/messaging/plugins"),
+  startPairSession: (channel: string) =>
+    request<MessagingPairSession>("/messaging/pair-sessions", {
+      method: "POST",
+      body: JSON.stringify({ channel }),
+    }),
+  getPairSession: (pair_id: string) =>
+    request<MessagingPairSession>(`/messaging/pair-sessions/${pair_id}`),
+  listMessagingLinks: () =>
+    request<MessagingLinkOut[]>("/messaging/links"),
+  deleteMessagingLink: (id: string) =>
+    request<void>(`/messaging/links/${id}`, { method: "DELETE" }),
+  listLinkGroups: (id: string) =>
+    request<MessagingGroup[]>(`/messaging/links/${id}/groups`),
+  resolveLinkInvite: (id: string, code: string) =>
+    request<MessagingGroup>(`/messaging/links/${id}/resolve-invite`, {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  getLinkFilters: (id: string) =>
+    request<MessagingFilters>(`/messaging/links/${id}/filters`),
+  putLinkFilters: (id: string, body: MessagingFilters) =>
+    request<MessagingFilters>(`/messaging/links/${id}/filters`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
 };
+
+export interface MessagingGroup {
+  jid: string;
+  subject: string;
+  participants_count: number;
+}
+
+export interface MessagingFilterRule {
+  kind: "phone" | "group";
+  value: string;
+  label?: string | null;
+}
+
+export interface MessagingFilters {
+  mode: "dms_only" | "allowlist" | "denylist" | "all";
+  rules: MessagingFilterRule[];
+}
+
+export interface MessagingPluginInfo {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface MessagingPairSession {
+  pair_id: string;
+  channel: string;
+  state: "waiting" | "qr" | "paired" | "failed";
+  qr_image_b64: string | null;
+  qr_text: string | null;
+  phone_number: string | null;
+  failure_reason: string | null;
+}
+
+export interface MessagingLinkOut {
+  id: string;
+  channel: string;
+  external_id: string;
+  display_name: string | null;
+  last_seen_at: string | null;
+  created_at: string;
+  filter_mode: "dms_only" | "allowlist" | "denylist" | "all";
+}
 
 // ---------- SSE streaming helper ----------
 //
