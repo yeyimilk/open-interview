@@ -100,6 +100,39 @@ For each project, the system produces and stores:
 **FR-10 Voice readiness (v1 = text-only)**
 - All chat I/O goes through a transport-agnostic message interface so STT/TTS adapters can plug in for v2 without rewrites.
 
+**FR-12 Messenger plugins (post-MVP, in development)**
+- Users can drive Mentor / Interviewer / general Chat from messenger apps
+  (WhatsApp first; WeChat / Telegram / Slack designed in but not yet
+  implemented).
+- Channels are added via a stable plugin SDK — no kernel changes per
+  channel, modeled on openclaw's `extensions/<channel>/` pattern.
+- Per-user pairing with **personal phone numbers** (no business API
+  required) via a Node sidecar that wraps Baileys (WhatsApp Web protocol).
+  The Python core plugin is HTTP-only against the sidecar; vendor SDKs
+  stay out of the core service.
+- Outbound delivery passes through a `DeliveryGuard` (per-recipient
+  token-bucket rate limit, repeat-suppression, length-aware chunking with
+  inter-chunk pacing) so a runaway agent loop can't get the user's number
+  banned.
+- Echo-suppression at the Baileys driver layer: every outbound message
+  id and a (chat-jid, normalized-text, TTL) cache is consulted before
+  emitting `messages.upsert`, preventing the bot from reading its own
+  group replies and entering an infinite loop.
+- Inbound commands: `/chat`, `/mentor [project]`, `/interview <project>
+  <level>`, `/exit`, `/status`, `/projects`, `/resumes`, `/resume
+  <id-or-name>`, `/sessions`, `/resume-session <prefix>`, `/whoami`,
+  `/help`. Plain DM auto-starts `/chat`. Plain group messages without an
+  active session are silently ignored.
+- Per-link conversation filter (`dms_only` / `allowlist` / `denylist` /
+  `all`) gates which conversations the bot answers in. Filter rows
+  cascade-delete on link removal; re-pair resets to safe defaults.
+
+**Out of scope for FR-12 in current iteration:**
+- WhatsApp DMs (linked-device sessions can't reliably read self-DMs from
+  the owner's primary phone — the corresponding modes are surfaced as
+  "Unavailable" in the UI). See `docs/TODO.md`.
+- WeChat — architecture supports it via the same SDK; no plugin yet.
+
 **FR-11 Privacy & data control**
 - Per-user "wipe my data" action.
 - Per-user export action (zip of memory + chat history + generated QA + uploaded artifacts metadata).
@@ -337,7 +370,128 @@ Tenant safety: every call site passes `user_id` and uses helpers like `paths.use
 
 Atomic writes: implementations expose `open_write` whose context manager finalizes via tmp+rename (local) or single-call PUT (cloud).
 
-### 3.10 Configuration & environment
+### 3.10 Messenger plugins (extensible channel SDK)
+
+> Status: WhatsApp implemented; WeChat / Telegram / Slack designed-in.
+
+**Goal.** Let users drive Mentor / Interviewer / Chat from messaging apps,
+in a way where adding a new channel is a localised plugin — not a kernel
+fork.
+
+**Pattern.** Inspired by openclaw's `extensions/<channel>/` layout. The
+core service exposes a stable `MessengerKernel` plus a small SDK of
+Protocols. Each channel is a self-contained plugin discovered via a
+JSON manifest; the kernel never imports vendor SDKs.
+
+**Inbound flow:**
+
+```
+phone ─▶ provider/sidecar ─▶ plugin webhook ─▶ kernel.handle_turn()
+                                                 │
+                          ┌──────────────────────┼──────────────────────┐
+                          ▼                      ▼                      ▼
+                  inbound dedup        link/filter resolve         command parse
+                                                                        │
+                                                              ┌─────────┴─────────┐
+                                                              ▼                   ▼
+                                                       slash-command         plain text
+                                                              │                   │
+                                                              ▼                   ▼
+                                                        cmd handler        active-mode
+                                                                          dispatch (mentor /
+                                                                          interviewer /
+                                                                          general)
+                                                                                  │
+                                                                                  ▼
+                                                                         AgentFacade →
+                                                                         Mentor/Interviewer/
+                                                                         general_stream
+                                                                                  │
+                                                                                  ▼
+                                                                         DeliveryGuard
+                                                                          (rate-limit,
+                                                                          repeat-drop,
+                                                                          chunk-pace)
+                                                                                  │
+                                                                                  ▼
+                                                                         plugin.send_text()
+```
+
+**SDK surface (`domain/messengers/sdk/`):**
+
+| Module | Purpose |
+| ------ | ------- |
+| `plugin.py` | `MessengerPlugin` Protocol + `MessengerCapabilities` dataclass |
+| `manifest.py` | `plugin.json` schema (id, name, capabilities, entry, scheme) |
+| `types.py` | `InboundTurn`, `Attachment`, `DeliveryResult` |
+| `command_parser.py` | Channel-agnostic slash-command grammar |
+| `pair_tokens.py` | SHA-256-hashed one-shot pairing tokens (5-min TTL) |
+| `session_store.py` | `MessengerLinkStore`, `ActiveSessionStore` |
+| `filter_store.py` | Per-link conversation filter (dms_only / allowlist / denylist / all) |
+| `delivery.py` | Pure chunker (sentence/paragraph aware) |
+| `delivery_guard.py` | Stateful per-recipient guard (rate-limit, repeat-suppress, chunk pacing) |
+| `agent_facade.py` | Protocol the kernel uses to drive agents |
+| `kernel.py` | `MessengerKernel.handle_turn()` — single entry point |
+
+**Channel registry.** `domain/messengers/registry.py` walks
+`plugins/<id>/plugin.json` files, loads the configured Python
+`module:attr`, and returns a `(plugin, manifest, router)` tuple per
+plugin. `app.py` mounts each plugin's webhook router under
+`/webhooks/{plugin_id}` during the FastAPI lifespan.
+
+**WhatsApp plugin (`plugins/whatsapp/`).** Two-process architecture:
+
+```
+┌───────────────────────────────────────────────┐
+│  whatsapp_bridge (Node + Fastify + Baileys)   │
+│  • multi-account socket manager               │
+│  • outbound id + (chat,text) echo cache       │
+│  • HMAC-signed webhook to core                │
+│  • port 9300, Bearer-auth API                 │
+└───────────────────┬───────────────────────────┘
+                    │ POST /pair  → {qr_image_b64}
+                    │ GET  /pair/:id/status
+                    │ POST /send                        ┌───────────────────────────┐
+                    │ DELETE /accounts/:id              │ Node ─ Baileys ─ WhatsApp │
+                    │                                   │     Web protocol          │
+                    │                                   └───────────────────────────┘
+                    ▼
+┌───────────────────────────────────────────────┐
+│  Python WhatsAppPlugin (in core)              │
+│  • POST /pair → returns QR PNG                │
+│  • inbound webhook → MessengerKernel          │
+│  • outbound: looks up account_id by jid,      │
+│    POSTs bridge /send                         │
+│  • verifies x-bridge-signature-256            │
+└───────────────────────────────────────────────┘
+```
+
+**Reliability layers:**
+- *Inbound idempotency* — `messenger_inbound_dedup(channel, message_id)`
+  table prevents replays.
+- *DeliveryGuard* — per-recipient token-bucket (1 msg/s, burst 5),
+  rolling 3-message repeat suppression, sentence-aware chunking with
+  ~0.4s inter-chunk pause, "(i/N)" pagination labels.
+- *Echo suppression (Baileys driver)* — `sentMessageIds` + 60-s TTL
+  `(chatJid, normalizedText)` cache; `_isOwnEcho()` is the very first
+  check in `messages.upsert`. Closes the group infinite-loop.
+
+**DB schema additions:**
+
+```sql
+messenger_links              -- (user_id, channel, external_id, display_name, filter_mode, last_seen_at)
+messenger_pair_tokens        -- (token_hash, user_id, channel, expires_at, used_at)
+messenger_active_sessions    -- (user_id, channel) → chat_session_id, mode
+messenger_inbound_dedup      -- (channel, message_id) → seen_at
+messenger_filters            -- (link_id, kind ∈ {phone,group}, value, label)
+                             --   FK link_id ON DELETE CASCADE
+```
+
+**Adding a new channel** is a single new directory under
+`plugins/<id>/` containing `plugin.json` + `runtime.py` (and any
+sidecar). Zero changes in the kernel.
+
+### 3.11 Configuration & environment
 
 The application reads config from env vars (twelve-factor) backed by a typed settings model (Pydantic `BaseSettings`). A single `Config` object is built once at startup and injected via DI; modules never read env vars directly.
 

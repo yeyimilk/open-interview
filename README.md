@@ -152,6 +152,27 @@ linked to project code with confidence scores.
 
 </td>
 </tr>
+<tr>
+<td width="50%" valign="top">
+
+### 💬 WhatsApp plugin
+Pair your **personal** number (no business API) by scanning
+a QR in **Settings → Messaging**. From your phone:
+`/chat`, `/mentor`, `/interview`, `/projects`, `/resumes`,
+`/sessions`, `/resume-session <prefix>`. Per-recipient rate
+limiting + echo suppression keep group chats sane.
+
+</td>
+<td width="50%" valign="top">
+
+### 🧩 Pluggable channels
+Channel SDK modeled on openclaw. Adding WeChat / Telegram /
+Slack is a new `plugins/<id>/` directory — no kernel
+changes. Manifest discovery, capability flags, kernel-
+mediated delivery with chunking + dedup.
+
+</td>
+</tr>
 </table>
 
 ---
@@ -159,23 +180,31 @@ linked to project code with confidence scores.
 ## 🏗️ Architecture
 
 ```
-┌──────────────┐
-│  React SPA   │  Vite · shadcn/ui · Tailwind · React Router
-└──────┬───────┘
-       │ HTTPS + JWT (access + refresh)
-       ▼
+┌──────────────┐         ┌─────────────────────────────────────┐
+│  React SPA   │         │  WhatsApp (your personal number)    │
+└──────┬───────┘         └────────────┬────────────────────────┘
+       │ HTTPS + JWT                  │ Baileys (WhatsApp Web)
+       │                              ▼
+       │              ┌────────────────────────────────────────┐
+       │              │ whatsapp_bridge (Node + Fastify)       │
+       │              │ • multi-account socket manager         │
+       │              │ • echo cache · HMAC webhook poster     │
+       │              └─────────────────┬──────────────────────┘
+       │                                │ HTTP + HMAC
+       ▼                                ▼
 ┌──────────────────────────────────────────────────────────┐
 │                 FastAPI Core API                         │
 │                                                          │
-│  api/   ─ auth, projects, resumes, qa, mentor,           │
-│           interviewer, audio                             │
+│  api/    ─ auth, projects, resumes, qa, mentor,          │
+│            interviewer, audio, messaging                 │
 │  domain/ ─ projects (chunker, embedder, summarizer)      │
-│           resumes (parser, claim grounder)               │
-│           qa (planner, shard generator, merger)          │
-│           mentor (LangGraph + ProjectFs tools)           │
-│           interviewer (LangGraph + picker + evaluator)   │
-│           memory (recall + distiller)                    │
-│  infra/ ─ Postgres · Redis · Chroma · BlobStorage        │
+│            resumes (parser, claim grounder)              │
+│            qa (planner, shard generator, merger)         │
+│            mentor (LangGraph + ProjectFs tools)          │
+│            interviewer (LangGraph + picker + evaluator)  │
+│            memory (recall + distiller)                   │
+│            messengers (kernel · sdk · plugins/whatsapp)  │
+│  infra/  ─ Postgres · Redis · Chroma · BlobStorage       │
 └──────┬─────────────┬───────────────┬─────────────────────┘
        │             │               │
        ▼             ▼               ▼
@@ -206,11 +235,12 @@ open-interview/
 │   ├── services/
 │   │   ├── core/              # FastAPI app (api / domain / infra)
 │   │   ├── gateway/           # GenAI gateway (provider router + rate limiter)
-│   │   └── workers/           # arq background jobs
+│   │   ├── workers/           # arq background jobs
+│   │   └── whatsapp_bridge/   # Node sidecar (Fastify + Baileys), port 9300
 │   └── libs/                  # shared schemas, db models, storage, logging
 ├── infra/                     # Docker Compose, Dockerfiles
 ├── config/                    # models.yaml, tiers.yaml, env profiles
-├── docs/                      # requirements-and-system-design.md
+├── docs/                      # design doc + TODO.md
 ├── scripts/                   # one-off scripts
 └── data/                      # gitignored: blob storage in dev
 ```
@@ -223,6 +253,7 @@ open-interview/
 | Core API | FastAPI, SQLAlchemy 2 (async), pydantic v2, LangGraph, httpx, argon2, PyJWT |
 | Persistence | Postgres (prod) / SQLite (tests), Redis, Chroma vector DB |
 | Workers | arq (Redis-backed task queue) |
+| Messenger bridge | Node 20, TypeScript, Fastify, Baileys (`@whiskeysockets/baileys`), vitest |
 | LLM | OpenAI-compatible — gpt-4o, gpt-4o-mini, gpt-4o-mini-transcribe, text-embedding-3-small (defaults; override in `config/models.yaml`) |
 | Tooling | pytest, ruff, mypy, Docker Compose, overmind / honcho |
 
@@ -310,8 +341,12 @@ Current coverage:
 | **M5** Interviewer mode | ✅ | Gap-aware picker, per-turn eval, final rubric, evaluation page |
 | **M6** Memory | ✅ | Working / episodic / long-term, distilled at session end, vector-recalled |
 | **Audio** | ✅ | Voice input in chat, server-side Whisper-class transcription |
-| **M7** Common KB | 🚧 | Applied-AI question bank + system-design primer seeds |
-| **M8** Hardening | 🚧 | Observability, export / wipe, real arq offload of QA generation |
+| **M7** Messenger SDK | ✅ | Plugin SDK + WhatsApp via Baileys sidecar (groups; commands; rate-limit; echo-suppression) |
+| **M8** Common KB | 🚧 | Applied-AI question bank + system-design primer seeds |
+| **M9** Public resources | 🚧 | LeetCode-tagged questions, system design primer, Designing Data-Intensive Apps notes — see [`docs/TODO.md`](docs/TODO.md) |
+| **M10** WhatsApp DMs | 🚧 | Self-DM and direct-message inbound; currently surfaced as "Unavailable" — see [`docs/TODO.md`](docs/TODO.md) |
+| **M11** WeChat | 🚧 | Same SDK; new plugin — see [`docs/TODO.md`](docs/TODO.md) |
+| **M12** Hardening | 🚧 | Observability, export / wipe, real arq offload of QA generation |
 
 ---
 
