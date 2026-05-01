@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
-from openinterview_schemas import ChatMessage, TokenUsage
+from openinterview_schemas import ChatMessage, ToolCall, ToolDefinition, TokenUsage
 
 
 class ProviderError(Exception):
@@ -21,12 +21,20 @@ class ProviderResult:
     content: str
     usage: TokenUsage
     finish_reason: str | None
+    tool_calls: list[ToolCall] | None = None
 
 
 @dataclass(frozen=True)
 class EmbeddingResult:
     model: str
     vectors: list[list[float]]
+    usage: TokenUsage
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    model: str
+    text: str
     usage: TokenUsage
 
 
@@ -40,6 +48,8 @@ class LLMProvider(Protocol):
         messages: list[ChatMessage],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> ProviderResult: ...
 
     async def embed(
@@ -60,4 +70,18 @@ class LLMProvider(Protocol):
         messages: list[ChatMessage],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> AsyncIterator[str]: ...
+
+    async def transcribe(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        model_id: str,
+        audio: bytes,
+        mime: str,
+        filename: str = "audio.webm",
+        language: str | None = None,
+    ) -> TranscriptionResult: ...

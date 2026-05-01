@@ -42,6 +42,7 @@ def _agent(request: Request) -> MentorAgent:
         embedder=GatewayEmbedder(request.app.state.gateway),
         vector_store=request.app.state.vector_store,
         retriever=_retriever(request),
+        blob=request.app.state.blob,
     )
 
 
@@ -151,6 +152,7 @@ async def send_message(
 
     async def _gen() -> AsyncIterator[bytes]:
         chunks: list[str] = []
+        tool_trace: list[dict] = []
         try:
             async for ev in agent.stream(
                 user_id=user.id,
@@ -161,12 +163,31 @@ async def send_message(
                 kind = ev.get("type", "message")
                 if kind == "token":
                     chunks.append(ev.get("content", ""))
+                elif kind == "tool_call":
+                    tool_trace.append(
+                        {
+                            "name": ev.get("name", ""),
+                            "args": ev.get("args"),
+                            "preview": None,
+                            "done": False,
+                        }
+                    )
+                elif kind == "tool_result":
+                    name = ev.get("name", "")
+                    preview = ev.get("preview")
+                    # attach to the most recent matching un-done call
+                    for entry in reversed(tool_trace):
+                        if entry["name"] == name and not entry["done"]:
+                            entry["preview"] = preview
+                            entry["done"] = True
+                            break
                 yield sse_format(kind, ev)
         except Exception as e:
             yield sse_format("error", {"message": str(e)})
             return
 
         full = "".join(chunks)
+        meta: dict | None = {"tools": tool_trace} if tool_trace else None
         # Persist assistant message + (best-effort) update long-term memory.
         try:
             async with sm() as s:
@@ -175,6 +196,7 @@ async def send_message(
                     user_id=user.id,
                     role="assistant",
                     content=full,
+                    meta=meta,
                 )
             # Distillation happens explicitly when the user ends the session.
         except Exception:

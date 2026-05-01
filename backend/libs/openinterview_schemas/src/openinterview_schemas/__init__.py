@@ -17,6 +17,10 @@ from .gateway import (
     EmbeddingRequest,
     EmbeddingResponse,
     TokenUsage,
+    ToolCall,
+    ToolDefinition,
+    TranscriptionRequest,
+    TranscriptionResponse,
     UsageRecord,
 )
 from .qa import (
@@ -63,6 +67,10 @@ __all__ = [
     "EmbeddingRequest",
     "EmbeddingResponse",
     "TokenUsage",
+    "ToolCall",
+    "ToolDefinition",
+    "TranscriptionRequest",
+    "TranscriptionResponse",
     "UsageRecord",
     "QAEvidence",
     "QAItemOut",

@@ -12,6 +12,8 @@ from openinterview_schemas import (
     EmbeddingRequest,
     EmbeddingResponse,
     TokenUsage,
+    TranscriptionRequest,
+    TranscriptionResponse,
 )
 
 from .keys.interface import KeyResolver
@@ -20,6 +22,21 @@ from .rate_limit.limiter import RateLimiter
 from .rate_limit.tiers import TierCatalog
 from .routing.catalog import ModelCatalog
 from .usage.interface import UsageEvent, UsageRepository
+
+
+def _ext_for_mime(mime: str) -> str:
+    m = (mime or "").lower()
+    if "webm" in m:
+        return "webm"
+    if "wav" in m:
+        return "wav"
+    if "ogg" in m or "opus" in m:
+        return "ogg"
+    if "mp3" in m or "mpeg" in m:
+        return "mp3"
+    if "mp4" in m or "m4a" in m:
+        return "m4a"
+    return "bin"
 
 
 class GatewayError(Exception):
@@ -82,6 +99,8 @@ class GatewayService:
                 messages=req.messages,
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
+                tools=req.tools,
+                tool_choice=req.tool_choice,
             )
             usage = result.usage
             return ChatCompletionResponse(
@@ -89,6 +108,7 @@ class GatewayService:
                 model=result.model,
                 provider=entry.provider,
                 content=result.content,
+                tool_calls=result.tool_calls,
                 usage=result.usage,
                 finish_reason=result.finish_reason,
             )
@@ -142,6 +162,8 @@ class GatewayService:
                 messages=req.messages,
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
+                tools=req.tools,
+                tool_choice=req.tool_choice,
             ):
                 total_chars += len(piece)
                 yield piece
@@ -195,6 +217,64 @@ class GatewayService:
                 model=result.model,
                 provider=entry.provider,
                 vectors=result.vectors,
+                usage=result.usage,
+            )
+        except ProviderError as e:
+            status_code = e.status
+            error = str(e)
+            raise GatewayError(error, status=e.status) from e
+        finally:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            await self._usage.record(
+                UsageEvent(
+                    user_id=req.user_id,
+                    mode=creds.mode,
+                    logical_model=entry.logical_name,
+                    provider=entry.provider,
+                    endpoint=entry.endpoint,
+                    usage=usage,
+                    latency_ms=latency_ms,
+                    status=status_code,
+                    error=error,
+                )
+            )
+
+    async def transcribe(self, req: TranscriptionRequest) -> TranscriptionResponse:
+        import base64
+
+        entry = self._catalog.resolve("transcription", req.logical_model)
+        creds = await self._keys.resolve(user_id=req.user_id, provider=entry.provider)
+        if creds is None:
+            raise GatewayError(
+                f"no credentials for provider {entry.provider}", status=503
+            )
+        await self._enforce_rate_limit(user_id=req.user_id, mode=creds.mode)
+
+        try:
+            audio = base64.b64decode(req.audio_b64)
+        except Exception as e:  # noqa: BLE001
+            raise GatewayError(f"invalid audio_b64: {e}", status=400) from e
+
+        start = time.monotonic()
+        status_code = 200
+        error: str | None = None
+        usage = TokenUsage()
+        try:
+            ext = _ext_for_mime(req.mime)
+            result = await self._provider.transcribe(
+                endpoint=entry.endpoint,
+                api_key=creds.api_key,
+                model_id=entry.model_id,
+                audio=audio,
+                mime=req.mime,
+                filename=f"audio.{ext}",
+                language=req.language,
+            )
+            usage = result.usage
+            return TranscriptionResponse(
+                text=result.text,
+                model=result.model,
+                provider=entry.provider,
                 usage=result.usage,
             )
         except ProviderError as e:

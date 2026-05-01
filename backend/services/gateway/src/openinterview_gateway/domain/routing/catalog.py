@@ -8,7 +8,7 @@ from typing import Literal
 import yaml
 
 
-Role = Literal["chat", "embedding"]
+Role = Literal["chat", "embedding", "transcription"]
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class ModelCatalog:
         data = yaml.safe_load(Path(path).read_text())
         entries: dict[tuple[Role, str], ModelEntry] = {}
         defaults: dict[Role, str] = {}
-        for role in ("chat", "embedding"):
+        for role in ("chat", "embedding", "transcription"):
             section = data.get(role) or {}
             if "default" in section:
                 defaults[role] = section["default"]  # type: ignore[index]

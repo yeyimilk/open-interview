@@ -9,6 +9,7 @@ from openinterview_db import Base
 from openinterview_logging import configure_logging, get_logger
 
 from .api.v1 import api_keys as api_keys_v1
+from .api.v1 import audio as audio_v1
 from .api.v1 import auth as auth_v1
 from .api.v1 import health as health_v1
 from .api.v1 import interviewer as interviewer_v1
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(qa_v1.router, prefix=api_prefix)
     app.include_router(mentor_v1.router, prefix=api_prefix)
     app.include_router(interviewer_v1.router, prefix=api_prefix)
+    app.include_router(audio_v1.router, prefix=api_prefix)
 
     # Singleton GatewayClient (used by domain services)
     from .infra.gateway_client import GatewayClient

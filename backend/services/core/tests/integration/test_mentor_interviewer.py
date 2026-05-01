@@ -32,6 +32,8 @@ class FakeGateway:
 
     async def chat(self, *, user_id, logical_model, messages, **kwargs):
         self.chat_calls += 1
+        # If tools are present, the model "decides" not to call any -- emulate
+        # an LLM that handles the question without browsing.
         prompt = messages[-1].content if messages else ""
         # Distillation
         if "distilling" in prompt.lower():

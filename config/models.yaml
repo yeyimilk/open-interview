@@ -27,3 +27,15 @@ embedding:
       provider: ollama
       endpoint: http://ollama:11434/v1
       model_id: nomic-embed-text
+
+transcription:
+  default: stt-default
+  models:
+    stt-default:
+      provider: openai
+      endpoint: https://api.openai.com/v1
+      model_id: gpt-4o-mini-transcribe
+    stt-whisper:
+      provider: openai
+      endpoint: https://api.openai.com/v1
+      model_id: whisper-1

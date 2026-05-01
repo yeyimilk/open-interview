@@ -1,7 +1,20 @@
-import { Loader2, Send, User2, Bot } from "lucide-react";
+import {
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  FileSearch,
+  FileText,
+  FolderTree,
+  Loader2,
+  Search,
+  Send,
+  User2,
+  Wrench,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ChatMessageOut, postSSE } from "../../api/client";
 import { Markdown } from "../../components/chat/Markdown";
+import { VoiceInput } from "../../components/chat/VoiceInput";
 import { cn } from "../../lib/cn";
 import { Button } from "../../components/ui/button";
 import { Textarea } from "../../components/ui/textarea";
@@ -13,10 +26,18 @@ interface Props {
   placeholder?: string;
 }
 
+interface ToolEvent {
+  name: string;
+  args?: any;
+  preview?: string;
+  done: boolean;
+}
+
 interface UIMessage {
   role: string;
   content: string;
   pending?: boolean;
+  tools?: ToolEvent[];
 }
 
 export function StreamingChat({
@@ -26,7 +47,18 @@ export function StreamingChat({
   placeholder,
 }: Props) {
   const [messages, setMessages] = useState<UIMessage[]>(
-    initialMessages.map((m) => ({ role: m.role, content: m.content }))
+    initialMessages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      tools: Array.isArray(m.meta?.tools)
+        ? (m.meta.tools as ToolEvent[]).map((t) => ({
+            name: t.name,
+            args: t.args,
+            preview: t.preview,
+            done: t.done ?? true,
+          }))
+        : undefined,
+    }))
   );
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -61,6 +93,36 @@ export function StreamingChat({
                 ...last,
                 content: last.content + piece,
               };
+            }
+            return copy;
+          });
+        } else if (ev.event === "tool_call") {
+          const name = (ev.data as any)?.name || "tool";
+          const args = (ev.data as any)?.args;
+          setMessages((m) => {
+            const copy = [...m];
+            const last = copy[copy.length - 1];
+            if (last && last.pending) {
+              const tools = [...(last.tools || []), { name, args, done: false }];
+              copy[copy.length - 1] = { ...last, tools };
+            }
+            return copy;
+          });
+        } else if (ev.event === "tool_result") {
+          const name = (ev.data as any)?.name || "tool";
+          const preview = (ev.data as any)?.preview || "";
+          setMessages((m) => {
+            const copy = [...m];
+            const last = copy[copy.length - 1];
+            if (last && last.pending && last.tools?.length) {
+              const tools = [...last.tools];
+              for (let i = tools.length - 1; i >= 0; i--) {
+                if (tools[i].name === name && !tools[i].done) {
+                  tools[i] = { ...tools[i], preview, done: true };
+                  break;
+                }
+              }
+              copy[copy.length - 1] = { ...last, tools };
             }
             return copy;
           });
@@ -145,6 +207,12 @@ export function StreamingChat({
           disabled={sending}
           className="resize-none min-h-[60px]"
         />
+        <VoiceInput
+          disabled={sending}
+          onTranscript={(text) =>
+            setInput((cur) => (cur ? `${cur.trimEnd()} ${text}` : text))
+          }
+        />
         <Button
           onClick={send}
           disabled={sending || !input.trim()}
@@ -159,6 +227,106 @@ export function StreamingChat({
       </div>
     </div>
   );
+}
+
+function ToolTrace({
+  tools,
+  pending,
+}: {
+  tools: ToolEvent[];
+  pending: boolean;
+}) {
+  const [open, setOpen] = useState(true);
+  const inProgress = tools.some((t) => !t.done);
+  const summary =
+    inProgress && pending
+      ? labelFor(tools[tools.length - 1])
+      : `Inspected project (${tools.length} ${
+          tools.length === 1 ? "step" : "steps"
+        })`;
+
+  return (
+    <div className="mb-2 rounded-lg border bg-muted/40 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-accent/40 transition-colors rounded-lg"
+      >
+        {inProgress && pending ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+        ) : (
+          <Wrench className="h-3.5 w-3.5 text-primary" />
+        )}
+        <span className="flex-1 text-left text-muted-foreground">
+          {summary}
+        </span>
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+      </button>
+      {open ? (
+        <ul className="border-t bg-background/50 px-2.5 py-2 space-y-1.5">
+          {tools.map((t, i) => (
+            <li
+              key={i}
+              className="flex items-start gap-2 text-muted-foreground"
+            >
+              <span className="mt-0.5 shrink-0">{iconFor(t.name)}</span>
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-foreground/90 truncate">
+                  {labelFor(t)}
+                </div>
+                {t.preview ? (
+                  <div className="truncate text-[11px] text-muted-foreground/80">
+                    {t.preview}
+                  </div>
+                ) : !t.done ? (
+                  <div className="text-[11px] italic">running...</div>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function iconFor(name: string) {
+  switch (name) {
+    case "list_dir":
+      return <FolderTree className="h-3.5 w-3.5" />;
+    case "read_file":
+      return <FileText className="h-3.5 w-3.5" />;
+    case "grep":
+      return <Search className="h-3.5 w-3.5" />;
+    case "tree":
+      return <FolderTree className="h-3.5 w-3.5" />;
+    default:
+      return <FileSearch className="h-3.5 w-3.5" />;
+  }
+}
+
+function labelFor(t: ToolEvent) {
+  const a = t.args || {};
+  switch (t.name) {
+    case "list_dir":
+      return `list_dir("${a.path || ""}")`;
+    case "read_file":
+      return a.start_line || a.end_line
+        ? `read_file("${a.path}", ${a.start_line || 1}-${a.end_line || "?"})`
+        : `read_file("${a.path}")`;
+    case "grep":
+      return a.glob
+        ? `grep(/${a.pattern}/, ${a.glob})`
+        : `grep(/${a.pattern}/)`;
+    case "tree":
+      return `tree(depth=${a.max_depth || 3})`;
+    default:
+      return t.name + "(...)";
+  }
 }
 
 function ChatBubble({ message }: { message: UIMessage }) {
@@ -188,13 +356,16 @@ function ChatBubble({ message }: { message: UIMessage }) {
             : "bg-card border rounded-tl-md"
         )}
       >
+        {!isUser && message.tools && message.tools.length > 0 ? (
+          <ToolTrace tools={message.tools} pending={!!message.pending} />
+        ) : null}
         {message.content ? (
           isUser ? (
             <div className="whitespace-pre-wrap">{message.content}</div>
           ) : (
             <Markdown streaming={message.pending}>{message.content}</Markdown>
           )
-        ) : message.pending ? (
+        ) : message.pending && (!message.tools || message.tools.length === 0) ? (
           <div className="flex items-center gap-1 py-1">
             <span className="typing-dot" style={{ animationDelay: "0ms" }} />
             <span className="typing-dot" style={{ animationDelay: "150ms" }} />

@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from openinterview_db import Base, make_engine, make_sessionmaker
 from openinterview_logging import configure_logging, get_logger
 
+from .api.v1 import audio as audio_v1
 from .api.v1 import chat as chat_v1
 from .api.v1 import embeddings as embed_v1
 from .api.v1 import health as health_v1
@@ -93,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_v1.router, prefix="/v1")
     app.include_router(chat_v1.router, prefix="/v1")
     app.include_router(embed_v1.router, prefix="/v1")
+    app.include_router(audio_v1.router, prefix="/v1")
 
     return app
 

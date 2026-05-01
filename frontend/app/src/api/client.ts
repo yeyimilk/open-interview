@@ -323,6 +323,20 @@ export const api = {
   getResume: (id: string) => request<ResumeDetail>(`/resumes/${id}`),
   deleteResume: (id: string) =>
     request<void>(`/resumes/${id}`, { method: "DELETE" }),
+  transcribeAudio: async (
+    audio: Blob,
+    language?: string
+  ): Promise<{ text: string }> => {
+    const fd = new FormData();
+    const ext = (audio.type.split("/")[1] || "webm").split(";")[0];
+    fd.append("file", audio, `audio.${ext}`);
+    if (language) fd.append("language", language);
+    return request<{ text: string }>("/audio/transcribe", {
+      method: "POST",
+      body: fd,
+      isJson: false,
+    });
+  },
   fetchResumeFile: async (
     id: string,
     inline = true

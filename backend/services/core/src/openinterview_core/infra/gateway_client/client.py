@@ -7,12 +7,17 @@ from uuid import UUID
 
 import httpx
 
+import base64
+
 from openinterview_schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatMessage,
     EmbeddingRequest,
     EmbeddingResponse,
+    ToolDefinition,
+    TranscriptionRequest,
+    TranscriptionResponse,
 )
 
 
@@ -60,6 +65,8 @@ class GatewayClient:
         messages: list[ChatMessage],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> ChatCompletionResponse:
         req = ChatCompletionRequest(
             user_id=user_id,
@@ -67,9 +74,32 @@ class GatewayClient:
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice,
         )
         data = await self._post("/v1/chat/completions", req.model_dump(mode="json"))
         return ChatCompletionResponse.model_validate(data)
+
+    async def transcribe(
+        self,
+        *,
+        user_id: UUID,
+        logical_model: str,
+        audio: bytes,
+        mime: str,
+        language: str | None = None,
+    ) -> TranscriptionResponse:
+        req = TranscriptionRequest(
+            user_id=user_id,
+            logical_model=logical_model,
+            audio_b64=base64.b64encode(audio).decode("ascii"),
+            mime=mime,
+            language=language,
+        )
+        data = await self._post(
+            "/v1/audio/transcribe", req.model_dump(mode="json")
+        )
+        return TranscriptionResponse.model_validate(data)
 
     async def embed(
         self,
@@ -92,6 +122,8 @@ class GatewayClient:
         messages: list[ChatMessage],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> AsyncIterator[str]:
         """Yields content deltas (str) from the gateway's streaming endpoint.
 
@@ -104,6 +136,8 @@ class GatewayClient:
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice,
         )
         url = f"{self._base}/v1/chat/completions/stream"
         body = req.model_dump(mode="json")

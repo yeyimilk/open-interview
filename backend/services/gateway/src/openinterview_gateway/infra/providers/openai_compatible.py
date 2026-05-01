@@ -10,13 +10,14 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from openinterview_schemas import ChatMessage, TokenUsage
+from openinterview_schemas import ChatMessage, ToolCall, ToolDefinition, TokenUsage
 
 from ...domain.providers.interface import (
     EmbeddingResult,
     LLMProvider,
     ProviderError,
     ProviderResult,
+    TranscriptionResult,
 )
 
 
@@ -50,15 +51,21 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[ChatMessage],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> ProviderResult:
         body: dict = {
             "model": model_id,
-            "messages": [m.model_dump() for m in messages],
+            "messages": [_msg_to_wire(m) for m in messages],
         }
         if temperature is not None:
             body["temperature"] = temperature
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        if tools:
+            body["tools"] = [t.model_dump() for t in tools]
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
 
         data = await self._post(endpoint, "/chat/completions", api_key, body)
         return _parse_chat(data, model_id)
@@ -84,16 +91,22 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[ChatMessage],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: str | dict | None = None,
     ) -> AsyncIterator[str]:
         body: dict = {
             "model": model_id,
-            "messages": [m.model_dump() for m in messages],
+            "messages": [_msg_to_wire(m) for m in messages],
             "stream": True,
         }
         if temperature is not None:
             body["temperature"] = temperature
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        if tools:
+            body["tools"] = [t.model_dump() for t in tools]
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
 
         url = endpoint.rstrip("/") + "/chat/completions"
         headers = self._headers(api_key)
@@ -135,18 +148,81 @@ class OpenAICompatibleProvider(LLMProvider):
                     yield piece
 
 
+    async def transcribe(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        model_id: str,
+        audio: bytes,
+        mime: str,
+        filename: str = "audio.webm",
+        language: str | None = None,
+    ) -> TranscriptionResult:
+        url = endpoint.rstrip("/") + "/audio/transcriptions"
+        files = {"file": (filename, audio, mime or "application/octet-stream")}
+        form: dict[str, str] = {"model": model_id, "response_format": "json"}
+        if language:
+            form["language"] = language
+        headers = {"Authorization": f"Bearer {api_key}"}
+        if self._client is not None:
+            r = await self._client.post(url, headers=headers, data=form, files=files)
+        else:
+            async with httpx.AsyncClient(timeout=self._timeout) as c:
+                r = await c.post(url, headers=headers, data=form, files=files)
+        if r.status_code >= 400:
+            raise ProviderError(
+                f"upstream {r.status_code}: {r.text[:500]}", status=502
+            )
+        try:
+            data = r.json()
+            text = data.get("text", "")
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"malformed transcription response: {e}") from e
+        return TranscriptionResult(
+            model=model_id,
+            text=text,
+            usage=TokenUsage(),
+        )
+
+
+def _msg_to_wire(m: ChatMessage) -> dict:
+    """Map our ChatMessage to OpenAI's wire format, omitting null fields."""
+    out: dict = {"role": m.role, "content": m.content or ""}
+    if m.name:
+        out["name"] = m.name
+    if m.tool_call_id:
+        out["tool_call_id"] = m.tool_call_id
+    if m.tool_calls:
+        out["tool_calls"] = [tc.model_dump() for tc in m.tool_calls]
+    return out
+
+
 def _parse_chat(data: dict, model_id: str) -> ProviderResult:
     try:
         choice = data["choices"][0]
-        msg = choice["message"]["content"]
+        msg = choice["message"]
+        content = msg.get("content") or ""
         finish = choice.get("finish_reason")
+        raw_tool_calls = msg.get("tool_calls") or []
     except (KeyError, IndexError, TypeError) as e:
         raise ProviderError(f"malformed chat response: {e}") from e
+    tool_calls = None
+    if raw_tool_calls:
+        tool_calls = [
+            ToolCall(
+                id=str(tc.get("id", "")),
+                type="function",
+                function=tc.get("function") or {},
+            )
+            for tc in raw_tool_calls
+        ]
     usage = data.get("usage") or {}
     return ProviderResult(
         id=str(data.get("id", "")),
         model=str(data.get("model", model_id)),
-        content=msg or "",
+        content=content,
+        tool_calls=tool_calls,
         usage=TokenUsage(
             prompt_tokens=int(usage.get("prompt_tokens", 0)),
             completion_tokens=int(usage.get("completion_tokens", 0)),
