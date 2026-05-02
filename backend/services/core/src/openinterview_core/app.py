@@ -94,6 +94,22 @@ async def _dev_patch_columns(conn) -> None:
             text("ALTER TABLE qa_items ADD COLUMN meta JSON NULL")
         )
 
+    # interview_evaluations: delivery rubric (audio-mode interviews).
+    if not await _has_column("interview_evaluations", "delivery_score"):
+        await conn.execute(
+            text(
+                "ALTER TABLE interview_evaluations "
+                "ADD COLUMN delivery_score FLOAT NULL"
+            )
+        )
+    if not await _has_column("interview_evaluations", "delivery_summary"):
+        await conn.execute(
+            text(
+                "ALTER TABLE interview_evaluations "
+                "ADD COLUMN delivery_summary JSON NULL"
+            )
+        )
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):

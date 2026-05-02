@@ -148,6 +148,26 @@ export interface InterviewEvaluationOut {
   strengths: string[];
   weaknesses: string[];
   suggested_practice: { area: string; why: string; next_step: string }[];
+  delivery_score: number | null;
+  delivery_summary: {
+    metrics?: {
+      turn_count?: number;
+      total_duration_s?: number;
+      avg_wpm?: number | null;
+      filler_counts?: { word: string; count: number }[];
+      total_pause_count?: number;
+      total_long_pauses?: number;
+      avg_tone?: {
+        confidence?: number | null;
+        energy?: number | null;
+        monotone?: number | null;
+      };
+      avg_language_accuracy?: number | null;
+      language_issues?: string[];
+      pronunciation_issues?: { word: string; note?: string }[];
+    };
+    feedback?: ({ area?: string; note?: string } | string)[];
+  } | null;
   created_at: string;
 }
 
@@ -535,6 +555,35 @@ export interface SSEEvent {
   data: any;
 }
 
+async function consumeSSE(
+  res: Response,
+  onEvent: (e: SSEEvent) => void
+): Promise<void> {
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new HttpError(res.status, text || `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const ev = parseFrame(block);
+      if (ev) onEvent(ev);
+    }
+  }
+  if (buf.trim()) {
+    const ev = parseFrame(buf);
+    if (ev) onEvent(ev);
+  }
+}
+
 export async function postSSE(
   path: string,
   body: any,
@@ -559,29 +608,33 @@ export async function postSSE(
     const refreshed = await tryRefresh();
     if (refreshed) res = await open();
   }
-  if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => "");
-    throw new HttpError(res.status, text || `HTTP ${res.status}`);
+  return consumeSSE(res, onEvent);
+}
+
+export async function postMultipartSSE(
+  path: string,
+  formData: FormData,
+  onEvent: (e: SSEEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  async function open(): Promise<Response> {
+    const t = getToken();
+    return fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      },
+      body: formData,
+      signal,
+    });
   }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      const ev = parseFrame(block);
-      if (ev) onEvent(ev);
-    }
+  let res = await open();
+  if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) res = await open();
   }
-  if (buf.trim()) {
-    const ev = parseFrame(buf);
-    if (ev) onEvent(ev);
-  }
+  return consumeSSE(res, onEvent);
 }
 
 function parseFrame(block: string): SSEEvent | null {

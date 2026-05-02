@@ -33,16 +33,47 @@ class SessionEvaluator:
                 user_id=user_id, session_id=session_id
             )
         transcript = "\n".join(f"{m.role.upper()}: {m.content}" for m in msgs)
+
+        # Aggregate per-turn voice analysis (audio-mode interviews only).
+        delivery_summary = _aggregate_voice([
+            (m.meta or {}).get("voice")
+            for m in msgs
+            if m.role == "user" and isinstance(m.meta, dict)
+        ])
+        has_delivery = delivery_summary is not None
+
+        delivery_block = ""
+        delivery_clause = ""
+        if has_delivery:
+            delivery_block = (
+                "\n\nDELIVERY METRICS (aggregated across all spoken answers):\n"
+                f"{json.dumps(delivery_summary, ensure_ascii=False)[:1500]}"
+            )
+            delivery_clause = (
+                ', "delivery_score": 0.0-5.0, '
+                '"delivery_feedback": [{"area": str, "note": str}]'
+            )
+
         prompt = (
             "You are an interview panel chair. Read the mock interview transcript and "
             "produce STRICT JSON:\n"
             '{"overall_score": 0.0-5.0, "scores": {"<category>": 0.0-5.0}, '
             '"summary": str, "strengths": [str], "weaknesses": [str], '
-            '"suggested_practice": [{"area": str, "why": str, "next_step": str}]}\n'
+            '"suggested_practice": [{"area": str, "why": str, "next_step": str}]'
+            + delivery_clause
+            + "}\n"
             "Use these categories where applicable: architecture, code_quality, "
             "data_modeling, scaling, testing, applied_ai_specific, behavioral_grounded.\n"
-            "JSON only.\n\n"
+            + (
+                "When DELIVERY METRICS are present, produce delivery_score "
+                "(speaking pace, fillers, confidence, language accuracy) and a "
+                "list of concise delivery_feedback notes.\n"
+                if has_delivery
+                else ""
+            )
+            + "JSON only.\n\n"
             f"TRANSCRIPT:\n{transcript[:12000]}"
+            + delivery_block
         )
         try:
             r = await self._gw.chat(
@@ -61,6 +92,23 @@ class SessionEvaluator:
         weaknesses = list(data.get("weaknesses") or [])
         suggested = list(data.get("suggested_practice") or [])
 
+        # Delivery rubric — only persist when the session was audio-mode.
+        delivery_score: float | None = None
+        delivery_feedback: list = []
+        delivery_summary_out: dict | None = None
+        if has_delivery:
+            try:
+                delivery_score = float(data.get("delivery_score") or 0.0)
+            except (TypeError, ValueError):
+                delivery_score = None
+            df = data.get("delivery_feedback") or []
+            if isinstance(df, list):
+                delivery_feedback = df
+            delivery_summary_out = {
+                "metrics": delivery_summary,
+                "feedback": delivery_feedback,
+            }
+
         # Persist evaluation row.
         async with self._sm() as s:
             await SqlChatRepository(s).save_evaluation(
@@ -72,6 +120,8 @@ class SessionEvaluator:
                 strengths=strengths,
                 weaknesses=weaknesses,
                 suggested_practice=suggested,
+                delivery_score=delivery_score,
+                delivery_summary=delivery_summary_out,
             )
 
         # Push gaps + strengths to long-term memory.
@@ -82,6 +132,14 @@ class SessionEvaluator:
         for s_ in strengths[:5]:
             if isinstance(s_, str) and s_.strip():
                 items.append(("strength", s_.strip(), 0.8))
+        for note in delivery_feedback[:5]:
+            text = ""
+            if isinstance(note, dict):
+                text = str(note.get("note") or note.get("area") or "").strip()
+            elif isinstance(note, str):
+                text = note.strip()
+            if text:
+                items.append(("delivery_gap", text, 0.7))
         if items:
             await self._retriever.store_long_term(
                 user_id=user_id, items=items, source_session_id=session_id
@@ -94,7 +152,96 @@ class SessionEvaluator:
             "strengths": strengths,
             "weaknesses": weaknesses,
             "suggested_practice": suggested,
+            "delivery_score": delivery_score,
+            "delivery_summary": delivery_summary_out,
         }
+
+
+def _aggregate_voice(voice_blobs: list[dict | None]) -> dict | None:
+    """Roll up per-turn voice analyses into a session-level summary.
+
+    Returns None when there is no audio data (text-only session)."""
+    blobs = [v for v in voice_blobs if isinstance(v, dict)]
+    if not blobs:
+        return None
+
+    def _avg(key: str) -> float | None:
+        vals: list[float] = []
+        for b in blobs:
+            x = b.get(key)
+            if isinstance(x, (int, float)):
+                vals.append(float(x))
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    def _avg_tone(key: str) -> float | None:
+        vals: list[float] = []
+        for b in blobs:
+            t = b.get("tone") or {}
+            x = t.get(key) if isinstance(t, dict) else None
+            if isinstance(x, (int, float)):
+                vals.append(float(x))
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    fillers: dict[str, int] = {}
+    total_pause = 0
+    total_long_pauses = 0
+    total_duration = 0.0
+    lang_issues: list[str] = []
+    pron_issues: list[dict] = []
+    for b in blobs:
+        for fw in b.get("filler_words") or []:
+            if isinstance(fw, dict):
+                w = str(fw.get("word") or "").strip().lower()
+                c = fw.get("count") or 0
+                if w and isinstance(c, (int, float)):
+                    fillers[w] = fillers.get(w, 0) + int(c)
+        if isinstance(b.get("pause_count"), (int, float)):
+            total_pause += int(b["pause_count"])
+        lp = b.get("long_pauses_s") or []
+        if isinstance(lp, list):
+            total_long_pauses += len(lp)
+        if isinstance(b.get("duration_s"), (int, float)):
+            total_duration += float(b["duration_s"])
+        la = b.get("language_accuracy") or {}
+        for issue in (la.get("issues") or []) if isinstance(la, dict) else []:
+            if isinstance(issue, str) and issue.strip():
+                lang_issues.append(issue.strip())
+        for p in b.get("pronunciation_issues") or []:
+            if isinstance(p, dict) and p.get("word"):
+                pron_issues.append(
+                    {"word": str(p["word"]), "note": str(p.get("note") or "")}
+                )
+
+    return {
+        "turn_count": len(blobs),
+        "total_duration_s": round(total_duration, 2),
+        "avg_wpm": _avg("wpm"),
+        "filler_counts": [
+            {"word": w, "count": c}
+            for w, c in sorted(fillers.items(), key=lambda kv: -kv[1])[:8]
+        ],
+        "total_pause_count": total_pause,
+        "total_long_pauses": total_long_pauses,
+        "avg_tone": {
+            "confidence": _avg_tone("confidence"),
+            "energy": _avg_tone("energy"),
+            "monotone": _avg_tone("monotone"),
+        },
+        "avg_language_accuracy": _avg_language(blobs),
+        "language_issues": lang_issues[:10],
+        "pronunciation_issues": pron_issues[:10],
+    }
+
+
+def _avg_language(blobs: list[dict]) -> float | None:
+    vals: list[float] = []
+    for b in blobs:
+        la = b.get("language_accuracy") or {}
+        if isinstance(la, dict):
+            s = la.get("score")
+            if isinstance(s, (int, float)):
+                vals.append(float(s))
+    return round(sum(vals) / len(vals), 2) if vals else None
 
 
 def _safe_json(text: str, *, default):

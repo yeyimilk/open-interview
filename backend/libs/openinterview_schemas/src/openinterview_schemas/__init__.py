@@ -22,6 +22,11 @@ from .gateway import (
     TranscriptionRequest,
     TranscriptionResponse,
     UsageRecord,
+    VoiceAnalysis,
+    VoiceAnalysisRequest,
+    VoiceAnalysisResponse,
+    VoiceLanguageAccuracy,
+    VoiceTone,
 )
 from .qa import (
     GenerateQARequest,
@@ -75,6 +80,11 @@ __all__ = [
     "TranscriptionRequest",
     "TranscriptionResponse",
     "UsageRecord",
+    "VoiceAnalysis",
+    "VoiceAnalysisRequest",
+    "VoiceAnalysisResponse",
+    "VoiceLanguageAccuracy",
+    "VoiceTone",
     "QAEvidence",
     "QAItemOut",
     "QASetOut",

@@ -54,3 +54,6 @@ class InterviewEvaluation(UUIDPKMixin, TimestampMixin, Base):
     strengths: Mapped[Any] = mapped_column(JsonType, nullable=True)
     weaknesses: Mapped[Any] = mapped_column(JsonType, nullable=True)
     suggested_practice: Mapped[Any] = mapped_column(JsonType, nullable=True)
+    # Audio-mode delivery rubric. Null when the session was text-only.
+    delivery_score: Mapped[float | None] = mapped_column(nullable=True)
+    delivery_summary: Mapped[Any] = mapped_column(JsonType, nullable=True)

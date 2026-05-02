@@ -33,11 +33,26 @@ interface ToolEvent {
   done: boolean;
 }
 
-interface UIMessage {
+export interface UIMessage {
   role: string;
   content: string;
   pending?: boolean;
   tools?: ToolEvent[];
+  voice?: VoiceMeta | null;
+}
+
+export interface VoiceMeta {
+  duration_s?: number | null;
+  wpm?: number | null;
+  filler_words?: { word: string; count: number }[];
+  pause_count?: number | null;
+  tone?: {
+    confidence?: number | null;
+    energy?: number | null;
+    monotone?: number | null;
+  };
+  language_accuracy?: { score?: number | null; issues?: string[] };
+  summary?: string | null;
 }
 
 export function StreamingChat({
@@ -58,6 +73,7 @@ export function StreamingChat({
             done: t.done ?? true,
           }))
         : undefined,
+      voice: (m.meta?.voice as VoiceMeta) ?? null,
     }))
   );
   const [input, setInput] = useState("");
@@ -329,7 +345,7 @@ function labelFor(t: ToolEvent) {
   }
 }
 
-function ChatBubble({ message }: { message: UIMessage }) {
+export function ChatBubble({ message }: { message: UIMessage }) {
   const isUser = message.role === "user";
   return (
     <div
@@ -372,7 +388,49 @@ function ChatBubble({ message }: { message: UIMessage }) {
             <span className="typing-dot" style={{ animationDelay: "300ms" }} />
           </div>
         ) : null}
+        {isUser && message.voice ? (
+          <VoiceMetricsRow voice={message.voice} />
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+function VoiceMetricsRow({ voice }: { voice: VoiceMeta }) {
+  const wpm = voice.wpm != null ? Math.round(voice.wpm) : null;
+  const dur = voice.duration_s != null ? voice.duration_s.toFixed(1) : null;
+  const conf =
+    voice.tone?.confidence != null
+      ? Math.round(voice.tone.confidence * 100)
+      : null;
+  const fillerTotal = (voice.filler_words || []).reduce(
+    (a, f) => a + (f.count || 0),
+    0
+  );
+  const lang =
+    voice.language_accuracy?.score != null
+      ? Math.round(voice.language_accuracy.score * 100)
+      : null;
+  const chips: { label: string; value: string }[] = [];
+  if (dur != null) chips.push({ label: "dur", value: `${dur}s` });
+  if (wpm != null) chips.push({ label: "pace", value: `${wpm} wpm` });
+  if (fillerTotal > 0)
+    chips.push({ label: "fillers", value: `${fillerTotal}` });
+  if (conf != null) chips.push({ label: "confidence", value: `${conf}%` });
+  if (lang != null) chips.push({ label: "lang", value: `${lang}%` });
+  if (chips.length === 0) return null;
+  return (
+    <div className="mt-2 -mb-1 flex flex-wrap gap-1.5">
+      {chips.map((c) => (
+        <span
+          key={c.label}
+          className="inline-flex items-center gap-1 rounded-full bg-primary-foreground/15 px-2 py-0.5 text-[10px] uppercase tracking-wide"
+          title={c.label}
+        >
+          <span className="opacity-70">{c.label}</span>
+          <span className="font-medium tabular-nums">{c.value}</span>
+        </span>
+      ))}
     </div>
   );
 }

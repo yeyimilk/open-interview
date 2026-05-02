@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -385,6 +385,141 @@ async def send_message(
     return StreamingResponse(_gen(), media_type="text/event-stream")
 
 
+@router.post("/sessions/{session_id}/messages/audio")
+async def send_audio_message(
+    session_id: UUID,
+    request: Request,
+    audio: UploadFile = File(...),
+    language: str | None = Form(default=None),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> StreamingResponse:
+    """Audio-input variant of send_message.
+
+    Pipeline:
+      1. Read audio bytes; gateway.analyze_voice() → (transcript, voice).
+      2. Persist user-role message with content=transcript, meta.voice=voice.
+      3. Run InterviewerAgent.stream(... voice_features=voice).
+      4. SSE-stream like the text path.
+    """
+    repo = SqlChatRepository(session)
+    sess = await repo.get_session(user_id=user.id, session_id=session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="not found")
+    target = dict(sess.target or {})
+    qa_set_id = UUID(target.get("qa_set_id")) if target.get("qa_set_id") else None
+    if qa_set_id is None:
+        raise HTTPException(status_code=400, detail="session missing qa_set_id")
+
+    asked_ids = {UUID(x) for x in target.get("asked_ids", [])}
+    prev_q = str(target.get("current_question") or "")
+    prev_a = str(target.get("current_ideal_answer") or "")
+    recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="empty audio upload")
+    mime = audio.content_type or "audio/webm"
+
+    gw = request.app.state.gateway
+    try:
+        v = await gw.analyze_voice(
+            user_id=user.id,
+            audio=audio_bytes,
+            mime=mime,
+            language=language,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"voice analysis failed: {e}")
+
+    voice_features = v.analysis.model_dump()
+    transcript = (v.analysis.transcript or "").strip()
+    if not transcript:
+        raise HTTPException(
+            status_code=422, detail="no speech detected in recording"
+        )
+
+    await repo.append_message(
+        session_id=session_id,
+        user_id=user.id,
+        role="user",
+        content=transcript,
+        meta={"voice": voice_features},
+    )
+
+    agent = _agent(request)
+    sm: async_sessionmaker[AsyncSession] = request.app.state.db.sessionmaker
+
+    async def _gen() -> AsyncIterator[bytes]:
+        # Surface transcript & lightweight delivery snapshot to the client
+        # immediately so the user bubble can show what was heard.
+        yield sse_format(
+            "voice",
+            {
+                "transcript": transcript,
+                "voice": voice_features,
+            },
+        )
+        chunks: list[str] = []
+        meta: dict = {}
+        try:
+            async for ev in agent.stream(
+                user_id=user.id,
+                session_id=session_id,
+                qa_set_id=qa_set_id,
+                user_input=transcript,
+                asked_ids=asked_ids,
+                prev_question=prev_q,
+                prev_ideal_answer=prev_a,
+                recent_claims=recent_claims,
+                voice_features=voice_features,
+            ):
+                kind = ev.get("type", "message")
+                if kind == "token":
+                    chunks.append(ev.get("content", ""))
+                if kind == "done":
+                    meta = ev.get("meta", {}) or {}
+                yield sse_format(kind, ev)
+        except Exception as e:
+            yield sse_format("error", {"message": str(e)})
+            return
+
+        full = "".join(chunks)
+        try:
+            async with sm() as s:
+                rrepo = SqlChatRepository(s)
+                await rrepo.append_message(
+                    session_id=session_id,
+                    user_id=user.id,
+                    role="assistant",
+                    content=full,
+                    meta={"evaluation": meta.get("evaluation")},
+                )
+                row = await rrepo.get_session(
+                    user_id=user.id, session_id=session_id
+                )
+                if row:
+                    new_target = dict(row.target or {})
+                    new_target["asked_ids"] = meta.get(
+                        "asked_ids", new_target.get("asked_ids", [])
+                    )
+                    new_target["recent_claims"] = meta.get(
+                        "recent_claims", new_target.get("recent_claims", [])
+                    )
+                    new_target["current_question"] = meta.get(
+                        "chosen_question", ""
+                    )
+                    new_target["current_ideal_answer"] = meta.get(
+                        "ideal_answer", ""
+                    )
+                    row.target = new_target
+                await s.commit()
+        except Exception:
+            pass
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
 @router.post(
     "/sessions/{session_id}:end",
     response_model=InterviewEvaluationOut,
@@ -418,6 +553,8 @@ async def end_session(
         strengths=eval_row.strengths or [],
         weaknesses=eval_row.weaknesses or [],
         suggested_practice=eval_row.suggested_practice or [],
+        delivery_score=eval_row.delivery_score,
+        delivery_summary=eval_row.delivery_summary,
         created_at=eval_row.created_at,
     )
 
@@ -444,5 +581,7 @@ async def get_evaluation(
         strengths=eval_row.strengths or [],
         weaknesses=eval_row.weaknesses or [],
         suggested_practice=eval_row.suggested_practice or [],
+        delivery_score=eval_row.delivery_score,
+        delivery_summary=eval_row.delivery_summary,
         created_at=eval_row.created_at,
     )

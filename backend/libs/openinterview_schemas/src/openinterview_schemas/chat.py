@@ -87,4 +87,6 @@ class InterviewEvaluationOut(BaseModel):
     strengths: list[str] = Field(default_factory=list)
     weaknesses: list[str] = Field(default_factory=list)
     suggested_practice: list[dict[str, Any]] = Field(default_factory=list)
+    delivery_score: float | None = None
+    delivery_summary: dict[str, Any] | None = None
     created_at: datetime

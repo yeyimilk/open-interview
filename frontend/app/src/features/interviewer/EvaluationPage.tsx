@@ -1,4 +1,10 @@
-import { ArrowLeft, ThumbsDown, ThumbsUp, Target } from "lucide-react";
+import {
+  ArrowLeft,
+  Mic,
+  Target,
+  ThumbsDown,
+  ThumbsUp,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -171,6 +177,133 @@ export function EvaluationPage() {
           </CardContent>
         </Card>
       </div>
+
+      {ev.delivery_score != null && ev.delivery_summary ? (
+        <Card className="mt-4">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Mic className="h-4 w-4 text-primary" /> Delivery
+            </CardTitle>
+            <CardDescription>
+              Speaking pace, fillers, confidence, and language accuracy
+              across {ev.delivery_summary.metrics?.turn_count ?? 0} spoken
+              answer
+              {(ev.delivery_summary.metrics?.turn_count ?? 0) === 1
+                ? ""
+                : "s"}
+              .
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="text-3xl tabular-nums font-semibold">
+                {ev.delivery_score.toFixed(1)}
+                <span className="text-base text-muted-foreground font-medium">
+                  {" "}
+                  / 5
+                </span>
+              </div>
+              <Badge variant={scoreVariant(ev.delivery_score)}>
+                {scoreVariant(ev.delivery_score) === "success"
+                  ? "Polished"
+                  : scoreVariant(ev.delivery_score) === "warning"
+                  ? "Solid"
+                  : "Work on this"}
+              </Badge>
+            </div>
+            <Progress value={(ev.delivery_score / 5) * 100} />
+
+            {(() => {
+              const m = ev.delivery_summary?.metrics || {};
+              const cells: { label: string; value: string }[] = [];
+              if (m.avg_wpm != null)
+                cells.push({
+                  label: "Avg pace",
+                  value: `${Math.round(m.avg_wpm)} wpm`,
+                });
+              if (m.total_duration_s != null)
+                cells.push({
+                  label: "Speaking time",
+                  value: `${Math.round(m.total_duration_s)}s`,
+                });
+              if (m.avg_tone?.confidence != null)
+                cells.push({
+                  label: "Confidence",
+                  value: `${Math.round(
+                    m.avg_tone.confidence * 100
+                  )}%`,
+                });
+              if (m.avg_language_accuracy != null)
+                cells.push({
+                  label: "Language",
+                  value: `${Math.round(
+                    m.avg_language_accuracy * 100
+                  )}%`,
+                });
+              if (m.total_pause_count != null)
+                cells.push({
+                  label: "Pauses",
+                  value: String(m.total_pause_count),
+                });
+              return cells.length > 0 ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+                  {cells.map((c) => (
+                    <div
+                      key={c.label}
+                      className="rounded-md border px-3 py-2 bg-muted/30"
+                    >
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        {c.label}
+                      </div>
+                      <div className="text-sm tabular-nums font-medium">
+                        {c.value}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
+
+            {ev.delivery_summary.metrics?.filler_counts &&
+            ev.delivery_summary.metrics.filler_counts.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {ev.delivery_summary.metrics.filler_counts.map((f) => (
+                  <Badge key={f.word} variant="outline">
+                    {f.count}× {f.word}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+
+            {ev.delivery_summary.feedback &&
+            ev.delivery_summary.feedback.length > 0 ? (
+              <ul className="space-y-2 text-sm">
+                {ev.delivery_summary.feedback.map((f, i) => {
+                  const note =
+                    typeof f === "string"
+                      ? f
+                      : f.note || f.area || "";
+                  const area =
+                    typeof f === "string" ? null : f.area || null;
+                  return (
+                    <li key={i} className="flex gap-2">
+                      <span className="text-primary">·</span>
+                      <span>
+                        {area ? (
+                          <span className="font-medium mr-1">
+                            {area}:
+                          </span>
+                        ) : null}
+                        {note}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card className="mt-4">
         <CardHeader>

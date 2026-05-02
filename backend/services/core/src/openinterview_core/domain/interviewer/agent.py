@@ -164,6 +164,7 @@ class InterviewerAgent:
         prev_question: str,
         prev_ideal_answer: str,
         recent_claims: list[str] | None = None,
+        voice_features: dict | None = None,
     ) -> dict:
         # Reuse the streaming pipeline and collapse to a single result dict.
         chunks: list[str] = []
@@ -177,6 +178,7 @@ class InterviewerAgent:
             prev_question=prev_question,
             prev_ideal_answer=prev_ideal_answer,
             recent_claims=recent_claims,
+            voice_features=voice_features,
         ):
             t = ev.get("type")
             if t == "token":
@@ -206,6 +208,7 @@ class InterviewerAgent:
         prev_question: str,
         prev_ideal_answer: str,
         recent_claims: list[str] | None = None,
+        voice_features: dict | None = None,
     ) -> AsyncIterator[dict]:
         """Stream tokens progressively.
 
@@ -215,14 +218,40 @@ class InterviewerAgent:
         """
         evaluation: dict[str, Any] = {}
         if prev_question and user_input:
+            voice_block = ""
+            if voice_features:
+                # Compact JSON for the prompt — full payload lives on the
+                # user message's meta.
+                voice_block = (
+                    "\nDELIVERY METRICS for the candidate's spoken answer "
+                    "(JSON):\n"
+                    f"{json.dumps(voice_features, ensure_ascii=False)[:1200]}\n"
+                )
+            delivery_clause = (
+                ', "delivery_score": 1-5, "delivery_feedback": str'
+                if voice_features
+                else ""
+            )
             eval_prompt = (
                 "You are evaluating a candidate's answer to an interview question. "
                 "Return STRICT JSON: "
                 '{"score": 1-5, "feedback": str, "missed_points": [str], '
-                '"probe_question": str | null}. JSON only.\n\n'
+                '"probe_question": str | null'
+                + delivery_clause
+                + "}. JSON only.\n"
+                + (
+                    "When DELIVERY METRICS are present, also score delivery "
+                    "(pace, fillers, confidence, language accuracy) and write "
+                    "one specific delivery_feedback note (e.g. \"strong opening, "
+                    "but ~9 fillers in 90s — slow down\").\n"
+                    if voice_features
+                    else ""
+                )
+                + "\n"
                 f"QUESTION: {prev_question}\n"
                 f"IDEAL ANSWER: {prev_ideal_answer[:1500]}\n"
                 f"USER ANSWER: {user_input[:2000]}"
+                + voice_block
             )
             try:
                 r = await self._gw.chat(
@@ -270,6 +299,15 @@ class InterviewerAgent:
                 yield _emit(f"Score: {score}/5\n\n")
             if fb:
                 yield _emit(f"Feedback: {fb}\n\n")
+            d_score = evaluation.get("delivery_score")
+            d_fb = evaluation.get("delivery_feedback")
+            if d_score is not None or d_fb:
+                bits = []
+                if d_score is not None:
+                    bits.append(f"{d_score}/5")
+                if d_fb:
+                    bits.append(str(d_fb))
+                yield _emit(f"Delivery: {' — '.join(bits)}\n\n")
             if missed:
                 yield _emit("Missed points:\n")
                 for m in missed:

@@ -1,4 +1,4 @@
-import { ArrowLeft, CheckCircle2, Clock4, Flag } from "lucide-react";
+import { ArrowLeft, Clock4, Flag, Mic, Type } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -7,19 +7,15 @@ import {
   ChatSessionOut,
   api,
 } from "../../api/client";
+import { AudioStreamingChat } from "../chat/AudioStreamingChat";
 import { EditableTitle } from "../../components/common/EditableTitle";
 import { PageHeader } from "../../components/common/PageHeader";
 import { StatusPill } from "../../components/common/StatusPill";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
+import { Card, CardContent } from "../../components/ui/card";
 import { Progress } from "../../components/ui/progress";
 import { Skeleton } from "../../components/ui/skeleton";
+import { cn } from "../../lib/cn";
 import { StreamingChat } from "../chat/StreamingChat";
 
 export function InterviewerSessionPage() {
@@ -28,6 +24,7 @@ export function InterviewerSessionPage() {
   const [session, setSession] = useState<ChatSessionOut | null>(null);
   const [messages, setMessages] = useState<ChatMessageOut[] | null>(null);
   const [ending, setEnding] = useState(false);
+  const [mode, setMode] = useState<"text" | "audio">("text");
   const messagesRef = useRef<ChatMessageOut[] | null>(null);
   messagesRef.current = messages;
 
@@ -104,7 +101,6 @@ export function InterviewerSessionPage() {
   }
 
   const target = (session?.target || {}) as any;
-  const currentQuestion: string = target.current_question || "";
   const askedCount = (target.asked_ids || []).length;
   const planned: number = target.n_questions || 0;
   const progress = planned > 0 ? Math.min(100, (askedCount / planned) * 100) : 0;
@@ -169,66 +165,66 @@ export function InterviewerSessionPage() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
+      <div className="grid gap-4">
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-xs uppercase tracking-wide text-muted-foreground">
+              Answer mode:
+            </span>
+            <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
+              <button
+                type="button"
+                onClick={() => setMode("text")}
+                className={cn(
+                  "px-2.5 py-1 rounded text-xs inline-flex items-center gap-1",
+                  mode === "text"
+                    ? "bg-background shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <Type className="h-3.5 w-3.5" /> Text
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("audio")}
+                className={cn(
+                  "px-2.5 py-1 rounded text-xs inline-flex items-center gap-1",
+                  mode === "audio"
+                    ? "bg-background shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                title="Speak your answer; we'll analyse pace, fillers, and confidence."
+              >
+                <Mic className="h-3.5 w-3.5" /> Voice
+              </button>
+            </div>
+            {mode === "audio" ? (
+              <span className="text-xs text-muted-foreground">
+                Tip: speak naturally — we score pace, fillers, and confidence.
+              </span>
+            ) : null}
+          </div>
           <Card>
             <CardContent className="p-3 md:p-4">
-              <StreamingChat
-                initialMessages={messages}
-                endpoint={`/interviewer/sessions/${id}/messages`}
-                placeholder="Type your answer here..."
-                onAfterSend={reload}
-              />
+              {mode === "text" ? (
+                <StreamingChat
+                  initialMessages={messages}
+                  endpoint={`/interviewer/sessions/${id}/messages`}
+                  placeholder="Type your answer here..."
+                  onAfterSend={reload}
+                />
+              ) : (
+                <AudioStreamingChat
+                  initialMessages={messages}
+                  endpoint={`/interviewer/sessions/${id}/messages/audio`}
+                  disabled={session?.status === "ended"}
+                  onAfterSend={reload}
+                />
+              )}
             </CardContent>
           </Card>
         </div>
 
-        <div className="space-y-4">
-          {currentQuestion ? (
-            <Card className="border-primary/30 bg-primary/5">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <CheckCircle2 className="h-4 w-4 text-primary" /> Current
-                  question
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm whitespace-pre-wrap leading-relaxed">
-                  {currentQuestion}
-                </p>
-              </CardContent>
-            </Card>
-          ) : messages.length === 0 ? (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">
-                  Preparing your interview...
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm text-muted-foreground">
-                Generating questions for this project and level. The first
-                question will appear automatically.
-              </CardContent>
-            </Card>
-          ) : null}
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">How this works</CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground space-y-2">
-              <p>
-                Answer in the chat. The interviewer will evaluate, give
-                feedback, then move to the next question.
-              </p>
-              <p>
-                When you're done, hit{" "}
-                <Badge variant="muted">End & evaluate</Badge> to get a full
-                rubric.
-              </p>
-            </CardContent>
-          </Card>
-        </div>
       </div>
     </div>
   );

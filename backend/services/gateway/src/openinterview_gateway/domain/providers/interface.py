@@ -38,6 +38,17 @@ class TranscriptionResult:
     usage: TokenUsage
 
 
+@dataclass(frozen=True)
+class VoiceAnalysisResult:
+    """Generic per-utterance delivery breakdown. Provider implementations
+    should return JSON-serialisable values; the schema is defined in
+    ``openinterview_schemas.VoiceAnalysis``."""
+
+    model: str
+    analysis: dict
+    usage: TokenUsage
+
+
 class LLMProvider(Protocol):
     async def chat(
         self,
@@ -85,3 +96,15 @@ class LLMProvider(Protocol):
         filename: str = "audio.webm",
         language: str | None = None,
     ) -> TranscriptionResult: ...
+
+    async def analyze_voice(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        model_id: str,
+        audio: bytes,
+        mime: str,
+        transcript_hint: str | None = None,
+        language: str | None = None,
+    ) -> VoiceAnalysisResult: ...

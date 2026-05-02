@@ -39,3 +39,12 @@ transcription:
       provider: openai
       endpoint: https://api.openai.com/v1
       model_id: whisper-1
+    # Audio-in delivery analysis. Must be a multimodal *chat* model that
+    # accepts an "input_audio" message part (gpt-4o-audio-preview,
+    # gpt-4o-mini-audio-preview, etc.). If you don't configure this entry
+    # the gateway will transparently fall back to stt-default + a chat
+    # model for delivery scoring (lower fidelity, but it works).
+    voice-analysis-default:
+      provider: openai
+      endpoint: https://api.openai.com/v1
+      model_id: gpt-4o-mini-audio-preview

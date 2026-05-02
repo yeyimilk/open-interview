@@ -160,6 +160,8 @@ class SqlChatRepository:
         strengths: list,
         weaknesses: list,
         suggested_practice: list,
+        delivery_score: float | None = None,
+        delivery_summary: dict | None = None,
     ) -> InterviewEvaluation:
         row = InterviewEvaluation(
             session_id=session_id,
@@ -170,6 +172,8 @@ class SqlChatRepository:
             strengths=strengths,
             weaknesses=weaknesses,
             suggested_practice=suggested_practice,
+            delivery_score=delivery_score,
+            delivery_summary=delivery_summary,
         )
         self._s.add(row)
         await self._s.commit()

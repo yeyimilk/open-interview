@@ -18,6 +18,8 @@ from openinterview_schemas import (
     ToolDefinition,
     TranscriptionRequest,
     TranscriptionResponse,
+    VoiceAnalysisRequest,
+    VoiceAnalysisResponse,
 )
 
 
@@ -100,6 +102,29 @@ class GatewayClient:
             "/v1/audio/transcribe", req.model_dump(mode="json")
         )
         return TranscriptionResponse.model_validate(data)
+
+    async def analyze_voice(
+        self,
+        *,
+        user_id: UUID,
+        logical_model: str = "voice-analysis-default",
+        audio: bytes,
+        mime: str,
+        language: str | None = None,
+        transcript_hint: str | None = None,
+    ) -> VoiceAnalysisResponse:
+        req = VoiceAnalysisRequest(
+            user_id=user_id,
+            logical_model=logical_model,
+            audio_b64=base64.b64encode(audio).decode("ascii"),
+            mime=mime,
+            language=language,
+            transcript_hint=transcript_hint,
+        )
+        data = await self._post(
+            "/v1/audio/analyze", req.model_dump(mode="json")
+        )
+        return VoiceAnalysisResponse.model_validate(data)
 
     async def embed(
         self,

@@ -70,6 +70,69 @@ class TranscriptionResponse(BaseModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
+# ---------- voice / delivery analysis ----------------------------------
+
+class FillerCount(BaseModel):
+    word: str
+    count: int
+
+
+class PronunciationIssue(BaseModel):
+    word: str
+    note: str | None = None
+
+
+class VoiceTone(BaseModel):
+    """Acoustic-style hints. All in [0,1] with simple monikers; the
+    distinction is intentionally coarse so multiple providers can agree."""
+
+    confidence: float | None = None
+    energy: float | None = None
+    monotone: float | None = None  # 0=expressive, 1=flat
+
+
+class VoiceLanguageAccuracy(BaseModel):
+    """Linguistic-correctness hints (grammar, idiom, word choice)."""
+
+    score: float | None = None  # 0..1
+    issues: list[str] = Field(default_factory=list)
+
+
+class VoiceAnalysis(BaseModel):
+    """Per-utterance breakdown returned by the gateway. Stored verbatim on
+    the user-role chat message's ``meta.voice`` so downstream evaluators
+    can aggregate it."""
+
+    transcript: str
+    duration_s: float | None = None
+    wpm: float | None = None
+    filler_words: list[FillerCount] = Field(default_factory=list)
+    pause_count: int | None = None
+    long_pauses_s: list[float] = Field(default_factory=list)
+    tone: VoiceTone = Field(default_factory=VoiceTone)
+    pronunciation_issues: list[PronunciationIssue] = Field(default_factory=list)
+    language_accuracy: VoiceLanguageAccuracy = Field(
+        default_factory=VoiceLanguageAccuracy
+    )
+    summary: str | None = None
+
+
+class VoiceAnalysisRequest(BaseModel):
+    user_id: UUID
+    logical_model: str = Field(default="voice-analysis-default")
+    audio_b64: str
+    mime: str
+    language: str | None = None
+    transcript_hint: str | None = None  # if caller already transcribed
+
+
+class VoiceAnalysisResponse(BaseModel):
+    analysis: VoiceAnalysis
+    model: str
+    provider: str
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+
+
 class EmbeddingRequest(BaseModel):
     user_id: UUID
     logical_model: str
