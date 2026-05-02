@@ -9,6 +9,7 @@ from openinterview_db import Base
 from openinterview_logging import configure_logging, get_logger
 
 from .api.v1 import api_keys as api_keys_v1
+from .api.v1 import model_preferences as model_preferences_v1
 from .api.v1 import audio as audio_v1
 from .api.v1 import auth as auth_v1
 from .api.v1 import general as general_v1
@@ -179,6 +180,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_v1.router, prefix=api_prefix)
     app.include_router(me_v1.router, prefix=api_prefix)
     app.include_router(api_keys_v1.router, prefix=api_prefix)
+    app.include_router(model_preferences_v1.router, prefix=api_prefix)
+    app.include_router(model_preferences_v1.providers_router, prefix=api_prefix)
     app.include_router(projects_v1.router, prefix=api_prefix)
     app.include_router(resumes_v1.router, prefix=api_prefix)
     app.include_router(qa_v1.router, prefix=api_prefix)
@@ -188,11 +191,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(audio_v1.router, prefix=api_prefix)
     app.include_router(messaging_v1.router, prefix=api_prefix)
 
-    # Singleton GatewayClient (used by domain services)
+    # Singleton GatewayClient (used by domain services). Per-user model
+    # preferences are looked up automatically via ``override_resolver`` so
+    # that callers can keep using logical model names; if the user has
+    # picked a different (provider, endpoint, model_id) it transparently
+    # overrides the catalog.
     from .infra.gateway_client import GatewayClient
+    from .infra.db.user_model_preference_repository import (
+        SqlUserModelPreferenceRepository,
+    )
+    from openinterview_schemas import ProviderOverride
+
+    sm = app.state.db.sessionmaker
+
+    async def _override_resolver(
+        user_id, role: str
+    ) -> ProviderOverride | None:
+        async with sm() as s:
+            row = await SqlUserModelPreferenceRepository(s).get(
+                user_id=user_id, role=role
+            )
+        if row is None:
+            return None
+        return ProviderOverride(
+            provider=row.provider,
+            endpoint=row.endpoint,
+            model_id=row.model_id,
+        )
 
     app.state.gateway = GatewayClient(
-        base_url=s.gateway_url, service_token=s.gateway_service_token
+        base_url=s.gateway_url,
+        service_token=s.gateway_service_token,
+        override_resolver=_override_resolver,
     )
 
     # Vector store: Chroma when CHROMA_URL is reachable; in-memory otherwise.

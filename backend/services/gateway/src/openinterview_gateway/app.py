@@ -12,6 +12,7 @@ from .api.v1 import audio as audio_v1
 from .api.v1 import chat as chat_v1
 from .api.v1 import embeddings as embed_v1
 from .api.v1 import health as health_v1
+from .api.v1 import providers as providers_v1
 from .config import Settings, get_settings
 from .domain.rate_limit.tiers import TierCatalog
 from .domain.routing.catalog import ModelCatalog
@@ -95,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat_v1.router, prefix="/v1")
     app.include_router(embed_v1.router, prefix="/v1")
     app.include_router(audio_v1.router, prefix="/v1")
+    app.include_router(providers_v1.router, prefix="/v1")
 
     return app
 

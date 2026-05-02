@@ -2,6 +2,7 @@ from .base import Base
 from .engine import make_engine, make_sessionmaker, AsyncSessionFactory
 from .models.user import User
 from .models.user_api_key import UserApiKey
+from .models.user_model_preference import UserModelPreference
 from .models.gateway_usage_log import GatewayUsageLog
 from .models.project import IngestRun, Project, ProjectDiagram, ProjectFile
 from .models.resume import ClaimMapping, Resume
@@ -23,6 +24,7 @@ __all__ = [
     "AsyncSessionFactory",
     "User",
     "UserApiKey",
+    "UserModelPreference",
     "GatewayUsageLog",
     "Project",
     "ProjectFile",

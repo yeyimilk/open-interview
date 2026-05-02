@@ -39,6 +39,15 @@ class TranscriptionResult:
 
 
 @dataclass(frozen=True)
+class ProviderModelInfo:
+    """One row of a provider's model catalogue (``GET /v1/models``)."""
+
+    id: str
+    owned_by: str | None = None
+    created: int | None = None
+
+
+@dataclass(frozen=True)
 class VoiceAnalysisResult:
     """Generic per-utterance delivery breakdown. Provider implementations
     should return JSON-serialisable values; the schema is defined in
@@ -108,3 +117,7 @@ class LLMProvider(Protocol):
         transcript_hint: str | None = None,
         language: str | None = None,
     ) -> VoiceAnalysisResult: ...
+
+    async def list_models(
+        self, *, endpoint: str, api_key: str
+    ) -> list[ProviderModelInfo]: ...

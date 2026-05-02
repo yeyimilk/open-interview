@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from .model_prefs import ProviderOverride
+
 
 class ToolCall(BaseModel):
     id: str
@@ -37,6 +39,7 @@ class ChatCompletionRequest(BaseModel):
     tools: list[ToolDefinition] | None = None
     tool_choice: str | dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    override: ProviderOverride | None = None
 
 
 class TokenUsage(BaseModel):
@@ -61,6 +64,7 @@ class TranscriptionRequest(BaseModel):
     audio_b64: str
     mime: str
     language: str | None = None
+    override: ProviderOverride | None = None
 
 
 class TranscriptionResponse(BaseModel):
@@ -124,6 +128,7 @@ class VoiceAnalysisRequest(BaseModel):
     mime: str
     language: str | None = None
     transcript_hint: str | None = None  # if caller already transcribed
+    override: ProviderOverride | None = None
 
 
 class VoiceAnalysisResponse(BaseModel):
@@ -137,6 +142,7 @@ class EmbeddingRequest(BaseModel):
     user_id: UUID
     logical_model: str
     inputs: list[str]
+    override: ProviderOverride | None = None
 
 
 class EmbeddingResponse(BaseModel):

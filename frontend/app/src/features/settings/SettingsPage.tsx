@@ -1,4 +1,6 @@
 import {
+  Brain,
+  Check,
   ChevronRight,
   Eye,
   EyeOff,
@@ -11,13 +13,15 @@ import {
   Palette,
   Plus,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   Sun,
   Trash2,
   Unlink,
   User as UserIcon,
+  X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   ApiKey,
@@ -26,6 +30,10 @@ import {
   MessagingLinkOut,
   MessagingPairSession,
   MessagingPluginInfo,
+  ModelPreferenceBody,
+  ModelPreferenceOut,
+  ModelRole,
+  ProviderModel,
   api,
 } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
@@ -65,6 +73,7 @@ import { cn } from "../../lib/cn";
 type SectionId =
   | "profile"
   | "keys"
+  | "models"
   | "messaging"
   | "appearance"
   | "data"
@@ -73,6 +82,7 @@ type SectionId =
 const SECTIONS: { id: SectionId; label: string; icon: React.ElementType }[] = [
   { id: "profile", label: "Profile", icon: UserIcon },
   { id: "keys", label: "API keys", icon: KeyRound },
+  { id: "models", label: "Models", icon: Brain },
   { id: "messaging", label: "Messaging", icon: MessageSquare },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "data", label: "Data & privacy", icon: ShieldCheck },
@@ -94,6 +104,7 @@ export function SettingsPage() {
         <div className="min-w-0 space-y-4">
           {section === "profile" && <ProfileSection />}
           {section === "keys" && <ApiKeysSection />}
+          {section === "models" && <ModelProvidersSection />}
           {section === "messaging" && <MessagingSection />}
           {section === "appearance" && <AppearanceSection />}
           {section === "data" && <DataSection />}
@@ -408,6 +419,539 @@ function ApiKeysSection() {
       </CardContent>
     </Card>
   );
+}
+
+// ---------- Model providers ----------
+
+type RoleMeta = {
+  role: ModelRole;
+  title: string;
+  description: string;
+  fallbackEndpoint: string;
+  fallbackProvider: string;
+  // returns true for models suitable for this role on the given provider
+  filter: (id: string, provider: string) => boolean;
+  // suggested default model id per provider (best match for the role)
+  defaultModel: (provider: string) => string | null;
+};
+
+function isLLMChatModel(id: string): boolean {
+  const i = id.toLowerCase();
+  if (
+    i.includes("embed") ||
+    i.includes("whisper") ||
+    i.includes("transcribe") ||
+    i.includes("tts") ||
+    i.includes("audio") ||
+    i.includes("image") ||
+    i.includes("dall-e") ||
+    i.includes("vision") ||
+    i.includes("moderation") ||
+    i.includes("realtime") ||
+    i.includes("davinci") ||
+    i.includes("babbage") ||
+    i.includes("instruct") ||
+    i.includes("guard") ||
+    i.includes("rerank")
+  ) {
+    return false;
+  }
+  return /^(gpt-|o1|o3|o4|chatgpt|claude|gemini|llama|mixtral|mistral|qwen|deepseek|grok|command|nova|sonar|phi|yi-)/.test(
+    i
+  );
+}
+
+const ROLE_META: RoleMeta[] = [
+  {
+    role: "chat",
+    title: "Chat / LLM",
+    description:
+      "Used by the mentor, mock interviewer and project explainer.",
+    fallbackEndpoint: "https://api.openai.com/v1",
+    fallbackProvider: "openai",
+    filter: (id) => isLLMChatModel(id),
+    defaultModel: (p) =>
+      ({
+        openai: "gpt-5",
+        anthropic: "claude-3-5-sonnet-latest",
+        openrouter: "openai/gpt-4o-mini",
+        together: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        fireworks: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        groq: "llama-3.3-70b-versatile",
+        deepseek: "deepseek-chat",
+        ollama: "llama3.1",
+      }[p] ?? null),
+  },
+  {
+    role: "embedding",
+    title: "Embeddings",
+    description: "Used for project search and long-term memory recall.",
+    fallbackEndpoint: "https://api.openai.com/v1",
+    fallbackProvider: "openai",
+    filter: (id) => /embed|bge|e5/i.test(id),
+    defaultModel: (p) =>
+      ({
+        openai: "text-embedding-3-small",
+        together: "BAAI/bge-large-en-v1.5",
+        fireworks: "nomic-ai/nomic-embed-text-v1.5",
+        ollama: "nomic-embed-text",
+      }[p] ?? null),
+  },
+  {
+    role: "transcription",
+    title: "Transcription (STT)",
+    description: "Used to convert your voice answers into text.",
+    fallbackEndpoint: "https://api.openai.com/v1",
+    fallbackProvider: "openai",
+    filter: (id) =>
+      /whisper|transcribe|stt|gpt-4o-(mini-)?transcribe/i.test(id),
+    defaultModel: (p) =>
+      ({
+        openai: "gpt-4o-mini-transcribe",
+        groq: "whisper-large-v3",
+      }[p] ?? null),
+  },
+  {
+    role: "voice-analysis",
+    title: "Voice analysis",
+    description:
+      "Multimodal model that scores delivery (pace, fillers, clarity).",
+    fallbackEndpoint: "https://api.openai.com/v1",
+    fallbackProvider: "openai",
+    // multimodal chat models that accept audio input
+    filter: (id) => /^(gpt-4o(-audio)?|gpt-5|chatgpt-4o)/i.test(id),
+    defaultModel: (p) =>
+      ({
+        openai: "gpt-4o-audio-preview",
+      }[p] ?? null),
+  },
+];
+
+function ModelProvidersSection() {
+  const [prefs, setPrefs] = useState<
+    Partial<Record<ModelRole, ModelPreferenceOut>>
+  >({});
+  const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setLoadErr(null);
+    try {
+      const [list, ks] = await Promise.all([
+        api.listModelPreferences(),
+        api.listApiKeys(),
+      ]);
+      const map: Partial<Record<ModelRole, ModelPreferenceOut>> = {};
+      for (const p of list) map[p.role] = p;
+      setPrefs(map);
+      setKeys(ks);
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Model providers</CardTitle>
+        <CardDescription>
+          Pick which provider and model to use for each role. Falls back to
+          the server default when no override is set. Add an API key first
+          under <span className="font-medium">API keys</span>.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {loadErr && (
+          <p className="text-sm text-destructive">{loadErr}</p>
+        )}
+        {loading ? (
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : keys.length === 0 ? (
+          <EmptyState
+            icon={KeyRound}
+            title="No API keys yet"
+            description="Add at least one provider key on the API keys tab to enable per-role overrides."
+          />
+        ) : (
+          ROLE_META.map((m) => (
+            <RoleCard
+              key={m.role}
+              meta={m}
+              keys={keys}
+              pref={prefs[m.role] ?? null}
+              onChanged={() => void reload()}
+            />
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function RoleCard({
+  meta,
+  keys,
+  pref,
+  onChanged,
+}: {
+  meta: (typeof ROLE_META)[number];
+  keys: ApiKey[];
+  pref: ModelPreferenceOut | null;
+  onChanged: () => void;
+}) {
+  const initialProvider =
+    pref?.provider ?? keys[0]?.provider ?? meta.fallbackProvider;
+  const initialEndpoint =
+    pref?.endpoint ?? endpointForProvider(initialProvider, meta.fallbackEndpoint);
+
+  const [provider, setProvider] = useState(initialProvider);
+  const [endpoint, setEndpoint] = useState(initialEndpoint);
+  const [modelId, setModelId] = useState(pref?.model_id ?? "");
+  const [advanced, setAdvanced] = useState(false);
+  const [showAllModels, setShowAllModels] = useState(false);
+  const [models, setModels] = useState<ProviderModel[]>([]);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverErr, setDiscoverErr] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testOk, setTestOk] = useState<boolean | null>(null);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const providers = useMemo(
+    () => Array.from(new Set(keys.map((k) => k.provider))),
+    [keys]
+  );
+
+  const discover = useCallback(
+    async (p: string, e: string) => {
+      setDiscovering(true);
+      setDiscoverErr(null);
+      try {
+        const res = await api.listProviderModels(p, e);
+        setModels(res.models);
+      } catch (err) {
+        setDiscoverErr(err instanceof Error ? err.message : String(err));
+        setModels([]);
+      } finally {
+        setDiscovering(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    void discover(provider, endpoint);
+  }, [provider, endpoint, discover]);
+
+  // Filtered list (per-role) and pre-selection of a sensible default.
+  const filteredModels = useMemo(() => {
+    if (showAllModels) return models;
+    const f = models.filter((m) => meta.filter(m.id, provider));
+    return f.length > 0 ? f : models;
+  }, [models, meta, provider, showAllModels]);
+
+  useEffect(() => {
+    if (modelId || filteredModels.length === 0) return;
+    const suggested = meta.defaultModel(provider);
+    const ids = filteredModels.map((m) => m.id);
+    const pick =
+      (suggested && ids.find((id) => id === suggested)) ??
+      (suggested && ids.find((id) => id.includes(suggested))) ??
+      ids[0];
+    if (pick) setModelId(pick);
+  }, [filteredModels, meta, provider, modelId]);
+
+  // When provider changes via the dropdown, snap to its conventional
+  // endpoint (unless the user is editing the endpoint manually) and
+  // clear the previous model pick so we re-suggest from the new catalog.
+  function onProviderChange(p: string) {
+    setProvider(p);
+    if (!advanced) {
+      setEndpoint(endpointForProvider(p, meta.fallbackEndpoint));
+    }
+    setModelId("");
+    setTestOk(null);
+    setTestMsg(null);
+  }
+
+  async function onTest() {
+    if (!modelId.trim()) {
+      setTestOk(false);
+      setTestMsg("pick a model first");
+      return;
+    }
+    setTesting(true);
+    setTestOk(null);
+    setTestMsg(null);
+    try {
+      const body: ModelPreferenceBody = {
+        provider,
+        endpoint,
+        model_id: modelId.trim(),
+      };
+      const res = await api.testModelPreference(meta.role, body);
+      setTestOk(res.ok);
+      setTestMsg(
+        res.ok
+          ? `OK — round-trip ${res.latency_ms}ms`
+          : (res.error ?? "test failed")
+      );
+    } catch (e) {
+      setTestOk(false);
+      setTestMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function onSave() {
+    if (!modelId.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      // Block save until a successful test. For transcription the gateway's
+      // /test endpoint can only verify the model id appears in the
+      // provider's catalogue (no synthetic audio), so a green test there is
+      // a weaker guarantee — but we still require it to run.
+      if (testOk !== true) {
+        await onTest();
+        return;
+      }
+      await api.upsertModelPreference(meta.role, {
+        provider,
+        endpoint,
+        model_id: modelId.trim(),
+      });
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onReset() {
+    setResetting(true);
+    setError(null);
+    try {
+      await api.deleteModelPreference(meta.role);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  return (
+    <div className="rounded-md border p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="font-medium">{meta.title}</div>
+          <div className="text-xs text-muted-foreground">
+            {meta.description}
+          </div>
+        </div>
+        <Badge variant={pref ? "default" : "secondary"}>
+          {pref ? "custom" : "default"}
+        </Badge>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 md:items-start">
+        <div className="space-y-1">
+          <div className="flex h-5 items-center justify-between">
+            <Label>Provider</Label>
+          </div>
+          <Select value={provider} onValueChange={onProviderChange}>
+            <SelectTrigger>
+              <SelectValue placeholder="Pick a provider" />
+            </SelectTrigger>
+            <SelectContent>
+              {providers.map((p) => (
+                <SelectItem key={p} value={p}>
+                  {p}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-1">
+          <div className="flex h-5 items-center justify-between">
+            <Label className="flex items-center gap-1">
+              Model
+              {discovering && (
+                <Loader2 className="h-3 w-3 animate-spin opacity-60" />
+              )}
+            </Label>
+            {models.length > 0 && (
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground"
+                onClick={() => setShowAllModels((v) => !v)}
+              >
+                {showAllModels
+                  ? `Recommended (${
+                      models.filter((m) => meta.filter(m.id, provider)).length
+                    })`
+                  : `Show all (${models.length})`}
+              </button>
+            )}
+          </div>
+          {filteredModels.length > 0 ? (
+            <Select value={modelId} onValueChange={setModelId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Pick a model" />
+              </SelectTrigger>
+              <SelectContent className="max-h-72">
+                {filteredModels.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input
+              placeholder="e.g. gpt-4o-mini"
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+            />
+          )}
+          {discoverErr && (
+            <div className="text-xs text-muted-foreground">
+              live discovery failed — type the model id manually.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setAdvanced((v) => !v)}
+        className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+      >
+        <ChevronRight
+          className={`h-3 w-3 transition-transform ${
+            advanced ? "rotate-90" : ""
+          }`}
+        />
+        Advanced (custom endpoint / model id)
+      </button>
+      {advanced && (
+        <div className="grid gap-3 md:grid-cols-2 pt-1">
+          <div className="space-y-1">
+            <Label>Endpoint URL</Label>
+            <Input
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+              placeholder="https://…/v1"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>Model ID</Label>
+            <Input
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              placeholder="provider/model-name"
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onTest}
+          disabled={testing || saving || !modelId.trim()}
+        >
+          {testing ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : testOk === true ? (
+            <Check className="h-4 w-4 text-green-600" />
+          ) : testOk === false ? (
+            <X className="h-4 w-4 text-destructive" />
+          ) : null}
+          Test
+        </Button>
+        <Button
+          size="sm"
+          onClick={onSave}
+          disabled={saving || !modelId.trim() || testOk !== true}
+        >
+          {saving ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Check className="h-4 w-4" />
+          )}{" "}
+          Save
+        </Button>
+        {pref && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onReset}
+            disabled={resetting}
+          >
+            {resetting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RotateCcw className="h-4 w-4" />
+            )}{" "}
+            Reset to default
+          </Button>
+        )}
+        {testMsg && (
+          <span
+            className={`text-xs ${
+              testOk ? "text-green-600" : "text-destructive"
+            }`}
+          >
+            {testMsg}
+          </span>
+        )}
+        {error && (
+          <span className="text-xs text-destructive">{error}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function endpointForProvider(provider: string, fallback: string): string {
+  switch (provider) {
+    case "openai":
+      return "https://api.openai.com/v1";
+    case "anthropic":
+      return "https://api.anthropic.com/v1";
+    case "openrouter":
+      return "https://openrouter.ai/api/v1";
+    case "together":
+      return "https://api.together.xyz/v1";
+    case "fireworks":
+      return "https://api.fireworks.ai/inference/v1";
+    case "groq":
+      return "https://api.groq.com/openai/v1";
+    case "deepseek":
+      return "https://api.deepseek.com/v1";
+    case "ollama":
+      return "http://localhost:11434/v1";
+    default:
+      return fallback;
+  }
 }
 
 // ---------- Messaging ----------

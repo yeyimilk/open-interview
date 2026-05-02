@@ -1,13 +1,12 @@
 """HTTP client to the GenAI Gateway. The only place core/workers talk to LLMs."""
 from __future__ import annotations
 
+import base64
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import UUID
 
 import httpx
-
-import base64
 
 from openinterview_schemas import (
     ChatCompletionRequest,
@@ -15,12 +14,22 @@ from openinterview_schemas import (
     ChatMessage,
     EmbeddingRequest,
     EmbeddingResponse,
+    ProviderModelList,
+    ProviderOverride,
+    ProviderTestRequest,
+    ProviderTestResponse,
     ToolDefinition,
     TranscriptionRequest,
     TranscriptionResponse,
     VoiceAnalysisRequest,
     VoiceAnalysisResponse,
 )
+
+# (user_id, role) -> ProviderOverride | None. The role is one of "chat",
+# "embedding", "transcription", "voice-analysis". The resolver is awaited
+# once per gateway request; it should return None when there's no per-user
+# override.
+OverrideResolver = Callable[[UUID, str], Awaitable["ProviderOverride | None"]]
 
 
 class GatewayClientError(Exception):
@@ -37,11 +46,24 @@ class GatewayClient:
         service_token: str,
         timeout_s: float = 60.0,
         client: httpx.AsyncClient | None = None,
+        override_resolver: OverrideResolver | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._token = service_token
         self._timeout = timeout_s
         self._client = client
+        self._override_resolver = override_resolver
+
+    async def _resolve_override(
+        self, user_id: UUID, role: str
+    ) -> ProviderOverride | None:
+        if self._override_resolver is None:
+            return None
+        try:
+            return await self._override_resolver(user_id, role)
+        except Exception:
+            # Pref lookup must never break gateway calls.
+            return None
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
@@ -78,6 +100,7 @@ class GatewayClient:
             max_tokens=max_tokens,
             tools=tools,
             tool_choice=tool_choice,
+            override=await self._resolve_override(user_id, "chat"),
         )
         data = await self._post("/v1/chat/completions", req.model_dump(mode="json"))
         return ChatCompletionResponse.model_validate(data)
@@ -97,6 +120,7 @@ class GatewayClient:
             audio_b64=base64.b64encode(audio).decode("ascii"),
             mime=mime,
             language=language,
+            override=await self._resolve_override(user_id, "transcription"),
         )
         data = await self._post(
             "/v1/audio/transcribe", req.model_dump(mode="json")
@@ -120,6 +144,7 @@ class GatewayClient:
             mime=mime,
             language=language,
             transcript_hint=transcript_hint,
+            override=await self._resolve_override(user_id, "voice-analysis"),
         )
         data = await self._post(
             "/v1/audio/analyze", req.model_dump(mode="json")
@@ -134,7 +159,10 @@ class GatewayClient:
         inputs: list[str],
     ) -> EmbeddingResponse:
         req = EmbeddingRequest(
-            user_id=user_id, logical_model=logical_model, inputs=inputs
+            user_id=user_id,
+            logical_model=logical_model,
+            inputs=inputs,
+            override=await self._resolve_override(user_id, "embedding"),
         )
         data = await self._post("/v1/embeddings", req.model_dump(mode="json"))
         return EmbeddingResponse.model_validate(data)
@@ -163,6 +191,7 @@ class GatewayClient:
             max_tokens=max_tokens,
             tools=tools,
             tool_choice=tool_choice,
+            override=await self._resolve_override(user_id, "chat"),
         )
         url = f"{self._base}/v1/chat/completions/stream"
         body = req.model_dump(mode="json")
@@ -231,6 +260,45 @@ class GatewayClient:
         )
         if resp.content:
             yield resp.content
+
+    async def list_provider_models(
+        self, *, user_id: UUID, provider: str, endpoint: str
+    ) -> ProviderModelList:
+        url = (
+            f"{self._base}/v1/providers/{provider}/models"
+            f"?user_id={user_id}&endpoint={endpoint}"
+        )
+        if self._client is not None:
+            r = await self._client.get(url, headers=self._headers())
+        else:
+            async with httpx.AsyncClient(timeout=self._timeout) as c:
+                r = await c.get(url, headers=self._headers())
+        if r.status_code >= 400:
+            raise GatewayClientError(
+                f"gateway {r.status_code}: {r.text[:500]}", status=r.status_code
+            )
+        return ProviderModelList.model_validate(r.json())
+
+    async def test_provider(
+        self,
+        *,
+        user_id: UUID,
+        role: str,
+        provider: str,
+        endpoint: str,
+        model_id: str,
+    ) -> ProviderTestResponse:
+        req = ProviderTestRequest(
+            user_id=user_id,
+            role=role,  # type: ignore[arg-type]
+            provider=provider,
+            endpoint=endpoint,
+            model_id=model_id,
+        )
+        data = await self._post(
+            "/v1/providers/test", req.model_dump(mode="json")
+        )
+        return ProviderTestResponse.model_validate(data)
 
 
 def _parse_sse_block(block: str) -> tuple[str, object] | None:

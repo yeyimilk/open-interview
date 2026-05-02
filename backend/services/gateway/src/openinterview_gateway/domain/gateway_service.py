@@ -11,6 +11,11 @@ from openinterview_schemas import (
     ChatCompletionResponse,
     EmbeddingRequest,
     EmbeddingResponse,
+    ProviderModel,
+    ProviderModelList,
+    ProviderOverride,
+    ProviderTestRequest,
+    ProviderTestResponse,
     TokenUsage,
     TranscriptionRequest,
     TranscriptionResponse,
@@ -23,7 +28,7 @@ from .keys.interface import KeyResolver
 from .providers.interface import LLMProvider, ProviderError
 from .rate_limit.limiter import RateLimiter
 from .rate_limit.tiers import TierCatalog
-from .routing.catalog import ModelCatalog
+from .routing.catalog import ModelCatalog, ModelEntry, Role
 from .usage.interface import UsageEvent, UsageRepository
 
 
@@ -81,8 +86,26 @@ class GatewayService:
         self._usage = usage
         self._tier_lookup = tier_lookup
 
+    def _resolve_entry(
+        self,
+        role: Role,
+        logical_model: str | None,
+        override: ProviderOverride | None,
+    ) -> ModelEntry:
+        """Pick a model entry for ``role``. Per-user ``override`` wins; otherwise
+        fall back to the server-wide catalog."""
+        if override is not None:
+            return ModelEntry(
+                logical_name=f"override:{role}",
+                role=role,
+                provider=override.provider,
+                endpoint=override.endpoint,
+                model_id=override.model_id,
+            )
+        return self._catalog.resolve(role, logical_model)
+
     async def chat(self, req: ChatCompletionRequest) -> ChatCompletionResponse:
-        entry = self._catalog.resolve("chat", req.logical_model)
+        entry = self._resolve_entry("chat", req.logical_model, req.override)
         creds = await self._keys.resolve(user_id=req.user_id, provider=entry.provider)
         if creds is None:
             raise GatewayError(
@@ -138,7 +161,7 @@ class GatewayService:
     async def chat_stream(
         self, req: ChatCompletionRequest
     ) -> AsyncIterator[str]:
-        entry = self._catalog.resolve("chat", req.logical_model)
+        entry = self._resolve_entry("chat", req.logical_model, req.override)
         creds = await self._keys.resolve(user_id=req.user_id, provider=entry.provider)
         if creds is None:
             raise GatewayError(
@@ -196,7 +219,7 @@ class GatewayService:
             )
 
     async def embed(self, req: EmbeddingRequest) -> EmbeddingResponse:
-        entry = self._catalog.resolve("embedding", req.logical_model)
+        entry = self._resolve_entry("embedding", req.logical_model, req.override)
         creds = await self._keys.resolve(user_id=req.user_id, provider=entry.provider)
         if creds is None:
             raise GatewayError(
@@ -245,7 +268,9 @@ class GatewayService:
     async def transcribe(self, req: TranscriptionRequest) -> TranscriptionResponse:
         import base64
 
-        entry = self._catalog.resolve("transcription", req.logical_model)
+        entry = self._resolve_entry(
+            "transcription", req.logical_model, req.override
+        )
         creds = await self._keys.resolve(user_id=req.user_id, provider=entry.provider)
         if creds is None:
             raise GatewayError(
@@ -321,7 +346,14 @@ class GatewayService:
         import base64
 
         try:
-            entry = self._catalog.resolve("transcription", req.logical_model)
+            if req.override is not None:
+                entry = self._resolve_entry(
+                    "transcription", req.logical_model, req.override
+                )
+            else:
+                entry = self._catalog.resolve(
+                    "transcription", req.logical_model
+                )
         except KeyError:
             return await self._analyze_voice_fallback(req)
         creds = await self._keys.resolve(user_id=req.user_id, provider=entry.provider)
@@ -502,6 +534,111 @@ class GatewayService:
             model=f"fallback:{stt.model}",
             provider=stt.provider,
             usage=stt.usage,
+        )
+
+    async def list_provider_models(
+        self, *, user_id: UUID, provider: str, endpoint: str
+    ) -> ProviderModelList:
+        """Discover the models hosted on a provider for a specific user.
+
+        Uses the user's BYO key for the provider; falls back to a static
+        suggestion list if the upstream doesn't expose ``GET /v1/models``."""
+        creds = await self._keys.resolve(user_id=user_id, provider=provider)
+        if creds is None:
+            raise GatewayError(
+                f"no credentials for provider {provider}", status=503
+            )
+        try:
+            rows = await self._provider.list_models(
+                endpoint=endpoint, api_key=creds.api_key
+            )
+        except ProviderError as e:
+            # Some providers (Anthropic-direct) don't ship /v1/models. Bail
+            # gracefully with an empty list so the caller can fallback.
+            raise GatewayError(str(e), status=e.status) from e
+        return ProviderModelList(
+            provider=provider,
+            endpoint=endpoint,
+            models=[
+                ProviderModel(id=r.id, owned_by=r.owned_by, created=r.created)
+                for r in rows
+            ],
+        )
+
+    async def test_provider(
+        self, req: ProviderTestRequest
+    ) -> ProviderTestResponse:
+        """Tiny round-trip to confirm the user's chosen model actually works.
+
+        For chat → 1-token completion. For embedding → 1 short input. For
+        transcription / voice-analysis we can't synthesise audio so we
+        check the model id appears in the provider's catalogue listing
+        (best-effort: returns ok=True if listing fails too)."""
+        creds = await self._keys.resolve(
+            user_id=req.user_id, provider=req.provider
+        )
+        if creds is None:
+            return ProviderTestResponse(
+                ok=False,
+                latency_ms=0,
+                error=f"no credentials for provider {req.provider}",
+            )
+        from openinterview_schemas import ChatMessage as _ChatMessage
+
+        start = time.monotonic()
+        try:
+            if req.role == "chat" or req.role == "voice-analysis":
+                # voice-analysis is a multimodal chat model; "ping" still
+                # exercises auth + model availability.
+                await self._provider.chat(
+                    endpoint=req.endpoint,
+                    api_key=creds.api_key,
+                    model_id=req.model_id,
+                    messages=[_ChatMessage(role="user", content="ping")],
+                    max_tokens=1,
+                    temperature=0,
+                )
+            elif req.role == "embedding":
+                await self._provider.embed(
+                    endpoint=req.endpoint,
+                    api_key=creds.api_key,
+                    model_id=req.model_id,
+                    inputs=["ping"],
+                )
+            elif req.role == "transcription":
+                # No audio to send; verify the model is at least listed.
+                try:
+                    rows = await self._provider.list_models(
+                        endpoint=req.endpoint, api_key=creds.api_key
+                    )
+                    ids = {r.id for r in rows}
+                    if rows and req.model_id not in ids:
+                        return ProviderTestResponse(
+                            ok=False,
+                            latency_ms=int(
+                                (time.monotonic() - start) * 1000
+                            ),
+                            error=(
+                                f"model '{req.model_id}' not listed by "
+                                f"provider; did you typo it?"
+                            ),
+                        )
+                except ProviderError:
+                    pass  # listing not supported — accept silently
+            else:
+                return ProviderTestResponse(
+                    ok=False,
+                    latency_ms=0,
+                    error=f"unsupported role: {req.role}",
+                )
+        except ProviderError as e:
+            return ProviderTestResponse(
+                ok=False,
+                latency_ms=int((time.monotonic() - start) * 1000),
+                error=str(e),
+            )
+        return ProviderTestResponse(
+            ok=True, latency_ms=int((time.monotonic() - start) * 1000)
         )
 
     async def _enforce_rate_limit(self, *, user_id: UUID, mode: str) -> None:

@@ -16,6 +16,7 @@ from ...domain.providers.interface import (
     EmbeddingResult,
     LLMProvider,
     ProviderError,
+    ProviderModelInfo,
     ProviderResult,
     TranscriptionResult,
     VoiceAnalysisResult,
@@ -59,16 +60,19 @@ class OpenAICompatibleProvider(LLMProvider):
             "model": model_id,
             "messages": [_msg_to_wire(m) for m in messages],
         }
-        if temperature is not None:
-            body["temperature"] = temperature
-        if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+        _apply_sampling(body, model_id, temperature, max_tokens)
         if tools:
             body["tools"] = [t.model_dump() for t in tools]
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
 
-        data = await self._post(endpoint, "/chat/completions", api_key, body)
+        try:
+            data = await self._post(endpoint, "/chat/completions", api_key, body)
+        except ProviderError as e:
+            retried = _retry_body_for_param_error(body, str(e))
+            if retried is None:
+                raise
+            data = await self._post(endpoint, "/chat/completions", api_key, retried)
         return _parse_chat(data, model_id)
 
     async def embed(
@@ -100,10 +104,7 @@ class OpenAICompatibleProvider(LLMProvider):
             "messages": [_msg_to_wire(m) for m in messages],
             "stream": True,
         }
-        if temperature is not None:
-            body["temperature"] = temperature
-        if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+        _apply_sampling(body, model_id, temperature, max_tokens)
         if tools:
             body["tools"] = [t.model_dump() for t in tools]
         if tool_choice is not None:
@@ -112,12 +113,22 @@ class OpenAICompatibleProvider(LLMProvider):
         url = endpoint.rstrip("/") + "/chat/completions"
         headers = self._headers(api_key)
 
-        async def _consume(client: httpx.AsyncClient) -> AsyncIterator[str]:
-            async with client.stream("POST", url, headers=headers, json=body) as r:
+        async def _consume(
+            client: httpx.AsyncClient, current_body: dict
+        ) -> AsyncIterator[str]:
+            async with client.stream(
+                "POST", url, headers=headers, json=current_body
+            ) as r:
                 if r.status_code >= 400:
                     txt = await r.aread()
+                    msg = txt.decode(errors="ignore")[:500]
+                    retried = _retry_body_for_param_error(current_body, msg)
+                    if retried is not None:
+                        async for piece in _consume(client, retried):
+                            yield piece
+                        return
                     raise ProviderError(
-                        f"upstream {r.status_code}: {txt.decode(errors='ignore')[:500]}",
+                        f"upstream {r.status_code}: {msg}",
                         status=502,
                     )
                 async for line in r.aiter_lines():
@@ -141,11 +152,11 @@ class OpenAICompatibleProvider(LLMProvider):
                             yield piece
 
         if self._client is not None:
-            async for piece in _consume(self._client):
+            async for piece in _consume(self._client, body):
                 yield piece
         else:
             async with httpx.AsyncClient(timeout=self._timeout) as c:
-                async for piece in _consume(c):
+                async for piece in _consume(c, body):
                     yield piece
 
 
@@ -251,6 +262,51 @@ class OpenAICompatibleProvider(LLMProvider):
         )
 
 
+    async def list_models(
+        self, *, endpoint: str, api_key: str
+    ) -> list[ProviderModelInfo]:
+        """List available models via OpenAI-style ``GET /v1/models``.
+
+        Works with OpenAI, OpenRouter, Together, Fireworks, vLLM, Ollama
+        and LM Studio. Returns an empty list for providers that don't
+        expose this endpoint (caller falls back to a static suggestion)."""
+        url = endpoint.rstrip("/") + "/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        if self._client is not None:
+            r = await self._client.get(url, headers=headers)
+        else:
+            async with httpx.AsyncClient(timeout=self._timeout) as c:
+                r = await c.get(url, headers=headers)
+        if r.status_code >= 400:
+            raise ProviderError(
+                f"upstream {r.status_code}: {r.text[:500]}", status=r.status_code
+            )
+        try:
+            data = r.json()
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"malformed models response: {e}") from e
+        rows = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            return []
+        out: list[ProviderModelInfo] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            mid = str(row.get("id") or "").strip()
+            if not mid:
+                continue
+            owned = row.get("owned_by")
+            created = row.get("created")
+            out.append(
+                ProviderModelInfo(
+                    id=mid,
+                    owned_by=str(owned) if owned else None,
+                    created=int(created) if isinstance(created, (int, float)) else None,
+                )
+            )
+        return out
+
+
 def _voice_analysis_prompt(
     *, transcript_hint: str | None, language: str | None
 ) -> str:
@@ -290,6 +346,87 @@ def _safe_json(text: str, *, default):
         return json.loads(cleaned)
     except Exception:
         return default
+
+
+_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+
+
+def _is_reasoning_model(model_id: str) -> bool:
+    """OpenAI's reasoning models (o-series, gpt-5) reject ``max_tokens`` and
+    non-default ``temperature``. Detect by the canonical id prefix; matches
+    work for ``o1``, ``o1-mini``, ``o3-mini``, ``o4-mini``, ``gpt-5``,
+    ``openai/gpt-5`` (OpenRouter), etc."""
+    mid = (model_id or "").lower()
+    # strip provider prefixes like "openai/" or "vendor:"
+    for sep in ("/", ":"):
+        if sep in mid:
+            mid = mid.split(sep, 1)[1]
+    return mid.startswith(_REASONING_PREFIXES)
+
+
+_REASONING_MIN_COMPLETION_TOKENS = 16000
+
+
+def _apply_sampling(
+    body: dict,
+    model_id: str,
+    temperature: float | None,
+    max_tokens: int | None,
+) -> None:
+    """Set temperature + max_tokens on the request body, picking the
+    parameter name expected by the model family. Reasoning models use
+    ``max_completion_tokens`` and silently drop a non-default temperature.
+    Reasoning tokens count against the limit *before* any visible content,
+    so we floor the budget high enough that small caller hints (e.g. 256)
+    don't get fully consumed by hidden reasoning."""
+    if _is_reasoning_model(model_id):
+        budget = max_tokens if max_tokens is not None else _REASONING_MIN_COMPLETION_TOKENS
+        if budget < _REASONING_MIN_COMPLETION_TOKENS:
+            budget = _REASONING_MIN_COMPLETION_TOKENS
+        body["max_completion_tokens"] = budget
+        # reasoning models only accept the default temperature; skip it
+        return
+    if temperature is not None:
+        body["temperature"] = temperature
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
+
+
+def _retry_body_for_param_error(body: dict, msg: str) -> dict | None:
+    """When the upstream rejects a known parameter, build a one-shot retry
+    body. Returns ``None`` when the error is unrecoverable so the caller
+    re-raises."""
+    low = msg.lower()
+    new = dict(body)
+    changed = False
+    if "max_tokens" in low and "max_completion_tokens" in low:
+        if "max_tokens" in new:
+            new["max_completion_tokens"] = new.pop("max_tokens")
+            changed = True
+    if "temperature" in low and (
+        "unsupported" in low or "does not support" in low
+    ):
+        if "temperature" in new:
+            new.pop("temperature")
+            changed = True
+    # Reasoning model burned through the budget on hidden reasoning tokens
+    # before producing visible output. Bump and retry once.
+    if "output limit was reached" in low or (
+        "max_tokens" in low and "higher" in low
+    ):
+        for k in ("max_completion_tokens", "max_tokens"):
+            if k in new:
+                cur = int(new[k] or 0)
+                bumped = max(cur * 2, 32000)
+                if bumped > cur:
+                    new[k] = bumped
+                    changed = True
+                    break
+        else:
+            # No budget in the body at all — explicitly set a generous one.
+            new["max_completion_tokens"] = 32000
+            changed = True
+    return new if changed else None
 
 
 def _msg_to_wire(m: ChatMessage) -> dict:

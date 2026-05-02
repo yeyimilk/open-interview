@@ -28,6 +28,16 @@ from .gateway import (
     VoiceLanguageAccuracy,
     VoiceTone,
 )
+from .model_prefs import (
+    ModelPreferenceOut,
+    ModelRole,
+    ProviderModel,
+    ProviderModelList,
+    ProviderOverride,
+    ProviderTestRequest,
+    ProviderTestResponse,
+    UpdateModelPreferenceRequest,
+)
 from .qa import (
     GenerateQARequest,
     GenerateQAResponse,
@@ -85,6 +95,14 @@ __all__ = [
     "VoiceAnalysisResponse",
     "VoiceLanguageAccuracy",
     "VoiceTone",
+    "ModelPreferenceOut",
+    "ModelRole",
+    "ProviderModel",
+    "ProviderModelList",
+    "ProviderOverride",
+    "ProviderTestRequest",
+    "ProviderTestResponse",
+    "UpdateModelPreferenceRequest",
     "QAEvidence",
     "QAItemOut",
     "QASetOut",

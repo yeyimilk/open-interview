@@ -21,6 +21,44 @@ export interface ApiKey {
   created_at: string;
 }
 
+export type ModelRole =
+  | "chat"
+  | "embedding"
+  | "transcription"
+  | "voice-analysis";
+
+export interface ModelPreferenceOut {
+  role: ModelRole;
+  provider: string;
+  endpoint: string;
+  model_id: string;
+  updated_at: string | null;
+}
+
+export interface ModelPreferenceBody {
+  provider: string;
+  endpoint: string;
+  model_id: string;
+}
+
+export interface ProviderModel {
+  id: string;
+  owned_by: string | null;
+  created: number | null;
+}
+
+export interface ProviderModelList {
+  provider: string;
+  endpoint: string;
+  models: ProviderModel[];
+}
+
+export interface ProviderTestResponse {
+  ok: boolean;
+  latency_ms: number;
+  error: string | null;
+}
+
 export interface ProjectOut {
   id: string;
   name: string;
@@ -302,6 +340,26 @@ export const api = {
     }),
   deleteApiKey: (id: string) =>
     request<void>(`/me/api-keys/${id}`, { method: "DELETE" }),
+
+  // model preferences
+  listModelPreferences: () =>
+    request<ModelPreferenceOut[]>("/me/model-preferences"),
+  upsertModelPreference: (role: ModelRole, body: ModelPreferenceBody) =>
+    request<ModelPreferenceOut>(`/me/model-preferences/${role}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteModelPreference: (role: ModelRole) =>
+    request<void>(`/me/model-preferences/${role}`, { method: "DELETE" }),
+  testModelPreference: (role: ModelRole, body: ModelPreferenceBody) =>
+    request<ProviderTestResponse>(
+      `/me/model-preferences/${role}/test`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  listProviderModels: (provider: string, endpoint: string) =>
+    request<ProviderModelList>(
+      `/providers/${provider}/models?endpoint=${encodeURIComponent(endpoint)}`
+    ),
 
   // projects
   listProjects: () => request<ProjectOut[]>("/projects"),
