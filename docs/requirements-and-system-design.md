@@ -319,24 +319,37 @@ Three layers, all per-user:
 
 **API surface (internal):**
 - `POST /v1/chat/completions` — OpenAI-shaped.
+- `POST /v1/chat/completions/stream` — SSE streaming.
 - `POST /v1/embeddings` — OpenAI-shaped.
+- `POST /v1/audio/transcribe` — speech-to-text.
+- `POST /v1/audio/analyze` — multimodal voice-analysis (delivery scoring).
+- `GET  /v1/providers/{provider}/models` — live model discovery (`GET /v1/models` proxy, scoped to a user's key).
+- `POST /v1/providers/test` — tiny round-trip validation for a `(role, provider, endpoint, model_id)` tuple.
 - `POST /v1/admin/keys` — set/rotate admin keys (admin-only).
 - `GET  /v1/usage` — usage records (filterable by user, model, time).
 
 **Per-request flow:**
 1. Authenticate caller (Core/Worker via service token + acting `user_id`).
-2. Resolve credentials:
-   - If user has BYO key for the requested logical model family, use it. Mode = `byo`.
+2. **Resolve model entry** (new):
+   - If the request body carries a `ProviderOverride { provider, endpoint, model_id }`, use it directly.
+   - Else fall back to `models.yaml` keyed by `(role, logical_name)`.
+3. Resolve credentials:
+   - If user has BYO key for the resolved provider, use it. Mode = `byo`.
    - Else use admin key for the resolved provider. Mode = `shared`.
-3. Apply rate limits:
+4. Apply rate limits:
    - `byo` → none.
    - `shared` → tier-based (requests/min). Token caps **not** enforced in v1 but recorded.
-4. Forward to OpenAI-compatible endpoint resolved by logical model name.
-5. Record `gateway_usage_log` row: `user_id, mode, logical_model, provider, endpoint, prompt_tokens, completion_tokens, total_tokens, latency_ms, status, error?`.
-6. Stream response back to caller.
+5. Forward to the OpenAI-compatible endpoint. Reasoning models (o-series, gpt-5) automatically use `max_completion_tokens` with a high floor; the provider auto-retries once on the well-known `unsupported parameter` and `output limit reached` errors.
+6. Record `gateway_usage_log` row: `user_id, mode, logical_model, provider, endpoint, prompt_tokens, completion_tokens, total_tokens, latency_ms, status, error?`.
+7. Stream response back to caller.
+
+**Per-user model preferences (added in M9):**
+- Stored in `user_model_preferences (user_id, role, provider, endpoint, model_id)` with one row per role (`chat`, `embedding`, `transcription`, `voice-analysis`).
+- Core's `GatewayClient` is constructed with an `override_resolver`; it transparently injects the user's `ProviderOverride` into every gateway request, so domain code keeps using logical model names and zero call sites had to change.
+- Settings → Models lets users browse provider catalogues live (filtered to recommended models per role with a "Show all" toggle), preselects a sensible default, and gates Save behind a green Test.
 
 **Config (admin-managed):**
-- `models.yaml` — logical name → provider/endpoint/model id mapping, plus role (chat/embedding) and default.
+- `models.yaml` — logical name → provider/endpoint/model id mapping, plus role (chat/embedding/transcription/voice-analysis) and default. Server-wide fallback only; users can override per-role.
 - `tiers.yaml` — tier → rate limit mapping.
 
 ### 3.8 Voice-ready interfaces (v1 stubs)
@@ -538,6 +551,8 @@ Profiles ship as files: `config/env.local.example`, `config/env.server.example`.
 ```
 users(id, email, password_hash, display_name, tier, is_admin, created_at)
 user_api_keys(id, user_id, provider, encrypted_key, label, created_at)
+user_model_preferences(id, user_id, role, provider, endpoint, model_id, created_at, updated_at)
+                        -- UNIQUE(user_id, role); role ∈ {chat, embedding, transcription, voice-analysis}
 projects(id, user_id, name, source_type, source_uri, status, created_at)
 resumes(id, user_id, original_filename, parsed_json, created_at)
 target_selections(id, user_id, position, level, project_ids[], created_at)
@@ -678,6 +693,12 @@ POST   /auth/refresh
 GET    /me
 POST   /me/api-keys
 DELETE /me/api-keys/{id}
+
+GET    /me/model-preferences
+PUT    /me/model-preferences/{role}        # role ∈ chat | embedding | transcription | voice-analysis
+DELETE /me/model-preferences/{role}
+POST   /me/model-preferences/{role}/test
+GET    /providers/{provider}/models?endpoint=...   # live discovery (proxies to gateway)
 
 POST   /projects              (multipart or git URL)
 GET    /projects

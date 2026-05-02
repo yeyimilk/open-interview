@@ -119,18 +119,24 @@ strengths, preferences). Distilled at session end.
 
 ### 🔌 BYO model gateway
 OpenAI-compatible internal gateway routes logical models
-(`chat-fast`, `chat-strong`, `embed-default`, `stt-default`) to
-any provider — OpenAI, Anthropic-via-adapter, Ollama, vLLM, LM
-Studio, OpenRouter, Together. BYO mode = no rate limits.
+(`chat-fast`, `chat-strong`, `embed-default`, `stt-default`,
+`voice-analysis-default`) to any provider — OpenAI, Anthropic,
+Ollama, vLLM, LM Studio, OpenRouter, Together, Groq, Fireworks,
+DeepSeek. **Per-user overrides** in Settings → Models let each
+user pick their own provider/model per role (chat, embeddings,
+STT, voice analysis) with live `/v1/models` discovery and a
+one-click Test button. BYO mode = no rate limits.
 
 </td>
 <td width="50%" valign="top">
 
-### 🎙️ Voice input
+### 🎙️ Voice input & delivery scoring
 Hold-to-record with live volume meter. Browser-native
 `MediaRecorder` (webm/opus on Chromium, mp4 on Safari) →
-multipart upload → Whisper / `gpt-4o-mini-transcribe`. Works
-in both Mentor and Interviewer chats.
+multipart upload → Whisper / `gpt-4o-mini-transcribe`. In
+Interviewer voice mode a multimodal pass also returns delivery
+metrics (pace, fillers, clarity) shown per-message and rolled
+into the end-of-session evaluation.
 
 </td>
 </tr>
@@ -304,10 +310,39 @@ transcription:
   models:
     stt-default:  { provider: openai, endpoint: https://api.openai.com/v1, model_id: gpt-4o-mini-transcribe }
     stt-whisper:  { provider: openai, endpoint: https://api.openai.com/v1, model_id: whisper-1 }
+
+voice-analysis:
+  default: voice-analysis-default
+  models:
+    voice-analysis-default: { provider: openai, endpoint: https://api.openai.com/v1, model_id: gpt-4o-audio-preview }
 ```
 
 Swap any line for your own provider — Ollama, vLLM, OpenRouter, Together —
 as long as it speaks the OpenAI API.
+
+#### Per-user overrides (Settings → Models)
+
+`models.yaml` is the **server-wide fallback**. Any user can override it
+per role from the UI:
+
+| Role            | Used by                                        | Discovery       |
+| --------------- | ---------------------------------------------- | --------------- |
+| Chat / LLM      | Mentor, mock interviewer, project explainer    | live `/v1/models` |
+| Embeddings      | Project search, long-term memory recall        | live `/v1/models` |
+| Transcription   | Speech-to-text in voice mode                   | live `/v1/models` |
+| Voice analysis  | Multimodal delivery scoring                    | live `/v1/models` |
+
+Picks are stored in `user_model_preferences` and transparently injected
+into every gateway call via a `ProviderOverride`, so the agents stay
+unaware. The Settings UI filters the catalogue to recommended models
+per role (with a "Show all" escape hatch), preselects a sane default
+for the picked provider, and gates Save behind a Test round-trip.
+
+Reasoning models (OpenAI o-series, gpt-5) are detected automatically:
+the gateway sends `max_completion_tokens` (with a high floor for hidden
+reasoning tokens) instead of `max_tokens`, drops unsupported `temperature`,
+and auto-retries once on the well-known `unsupported parameter` and
+`output limit reached` errors.
 
 ---
 
@@ -340,9 +375,10 @@ Current coverage:
 | **M4** Mentor mode | ✅ | LangGraph + 3-layer memory + ProjectFs tools (`list_dir` / `read_file` / `grep` / `tree`) |
 | **M5** Interviewer mode | ✅ | Gap-aware picker, per-turn eval, final rubric, evaluation page |
 | **M6** Memory | ✅ | Working / episodic / long-term, distilled at session end, vector-recalled |
-| **Audio** | ✅ | Voice input in chat, server-side Whisper-class transcription |
+| **Audio** | ✅ | Voice input in chat + multimodal delivery scoring rolled into evaluation |
 | **M7** Messenger SDK | ✅ | Plugin SDK + WhatsApp via Baileys sidecar (groups; commands; rate-limit; echo-suppression) |
 | **M8** Common KB | 🚧 | Applied-AI question bank + system-design primer seeds |
+| **M9** Per-user model picks | ✅ | Settings → Models with live `/v1/models` discovery, per-role override, Test before Save; reasoning-model param auto-translation |
 | **M9** Public resources | 🚧 | LeetCode-tagged questions, system design primer, Designing Data-Intensive Apps notes — see [`docs/TODO.md`](docs/TODO.md) |
 | **M10** WhatsApp DMs | 🚧 | Self-DM and direct-message inbound; currently surfaced as "Unavailable" — see [`docs/TODO.md`](docs/TODO.md) |
 | **M11** WeChat | 🚧 | Same SDK; new plugin — see [`docs/TODO.md`](docs/TODO.md) |
