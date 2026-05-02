@@ -9,6 +9,8 @@ import { ThemeProvider } from "./components/theme/ThemeProvider";
 import { Toaster } from "./components/ui/sonner";
 import { LoginPage } from "./features/auth/LoginPage";
 import { RegisterPage } from "./features/auth/RegisterPage";
+import { ChatListPage } from "./features/chat/ChatListPage";
+import { ChatSessionPage } from "./features/chat/ChatSessionPage";
 import { EvaluationPage } from "./features/interviewer/EvaluationPage";
 import { InterviewerListPage } from "./features/interviewer/InterviewerListPage";
 import { InterviewerSessionPage } from "./features/interviewer/InterviewerSessionPage";
@@ -91,6 +93,22 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <QASetPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="chat"
+                element={
+                  <RequireAuth>
+                    <ChatListPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="chat/:id"
+                element={
+                  <RequireAuth>
+                    <ChatSessionPage />
                   </RequireAuth>
                 }
               />

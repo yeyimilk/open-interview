@@ -9,9 +9,9 @@ import { StatusPill } from "../../components/common/StatusPill";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent } from "../../components/ui/card";
 import { Skeleton } from "../../components/ui/skeleton";
-import { StreamingChat } from "../chat/StreamingChat";
+import { StreamingChat } from "./StreamingChat";
 
-export function MentorSessionPage() {
+export function ChatSessionPage() {
   const { id = "" } = useParams();
   const nav = useNavigate();
   const [session, setSession] = useState<ChatSessionOut | null>(null);
@@ -21,9 +21,9 @@ export function MentorSessionPage() {
     if (!id) return;
     void (async () => {
       try {
-        const ms = await api.listMentorMessages(id);
+        const ms = await api.listGeneralMessages(id);
         setMessages(ms);
-        const all = await api.listMentorSessions();
+        const all = await api.listGeneralSessions();
         setSession(all.find((s) => s.id === id) || null);
       } catch (e) {
         toast.error("Failed to load", {
@@ -35,9 +35,9 @@ export function MentorSessionPage() {
 
   async function endSession() {
     try {
-      const s = await api.endMentorSession(id);
+      const s = await api.endGeneralSession(id);
       setSession(s);
-      toast.success("Session ended", {
+      toast.success("Chat ended", {
         description: "Memory has been distilled and saved.",
       });
     } catch (e) {
@@ -46,17 +46,19 @@ export function MentorSessionPage() {
   }
 
   async function rename(next: string) {
-    const updated = await api.renameMentorSession(id, next || null);
+    const updated = await api.renameGeneralSession(id, next || null);
     setSession(updated);
   }
 
   async function refreshSession() {
+    // After the first user message the server may have auto-titled the
+    // session — re-fetch so the header reflects it.
     try {
-      const all = await api.listMentorSessions();
+      const all = await api.listGeneralSessions();
       const fresh = all.find((s) => s.id === id);
       if (fresh) setSession(fresh);
     } catch {
-      // Non-fatal.
+      // Non-fatal; the title will refresh on the next page load.
     }
   }
 
@@ -76,15 +78,15 @@ export function MentorSessionPage() {
           <EditableTitle
             value={session?.title ?? null}
             onSave={rename}
-            placeholder="Untitled mentor session"
+            placeholder="Untitled chat"
             readOnly={!session || session.status === "ended"}
           />
         }
-        description="Your AI mentor remembers context across sessions."
+        description="Workspace-aware general assistant. Same agent that powers WhatsApp /chat."
         actions={
           <>
             {session ? <StatusPill status={session.status} /> : null}
-            <Button variant="outline" onClick={() => nav("/mentor")}>
+            <Button variant="outline" onClick={() => nav("/chat")}>
               <ArrowLeft className="h-4 w-4" /> Back
             </Button>
             <Button
@@ -102,8 +104,8 @@ export function MentorSessionPage() {
         <CardContent className="p-3 md:p-4">
           <StreamingChat
             initialMessages={messages}
-            endpoint={`/mentor/sessions/${id}/messages`}
-            placeholder="Ask anything about your project, design, or interviews..."
+            endpoint={`/general/sessions/${id}/messages`}
+            placeholder="Ask anything — projects, resumes, debugging, brainstorms..."
             onAfterSend={refreshSession}
           />
         </CardContent>

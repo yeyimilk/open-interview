@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ChatSessionOut(BaseModel):
@@ -16,6 +16,10 @@ class ChatSessionOut(BaseModel):
     status: str
     turn_count: int
     created_at: datetime
+
+
+class UpdateChatSessionRequest(BaseModel):
+    title: str | None = None
 
 
 class ChatMessageOut(BaseModel):
@@ -39,13 +43,35 @@ class SendMentorMessageRequest(BaseModel):
     project_id: UUID | None = None
 
 
+# ---------- General /chat ----------
+
+class CreateGeneralSessionRequest(BaseModel):
+    title: str | None = None
+
+
+class SendGeneralMessageRequest(BaseModel):
+    content: str
+
+
 # ---------- Interviewer ----------
 
 class CreateInterviewerSessionRequest(BaseModel):
-    project_id: UUID
+    """Mock-interview kickoff. Provide exactly one of ``resume_id`` (preferred)
+    or ``project_id`` (legacy single-project flow)."""
+
+    resume_id: UUID | None = None
+    project_id: UUID | None = None
     position: str = "swe_generic"
     level: str = "mid"
     n_questions: int = 5
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "CreateInterviewerSessionRequest":
+        if (self.resume_id is None) == (self.project_id is None):
+            raise ValueError(
+                "Provide exactly one of resume_id or project_id"
+            )
+        return self
 
 
 class SendInterviewerMessageRequest(BaseModel):

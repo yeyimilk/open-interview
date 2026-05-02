@@ -4,6 +4,7 @@ import {
   Folders,
   GraduationCap,
   KeyRound,
+  MessageSquare,
   Mic,
 } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -39,9 +40,16 @@ const STEPS = [
     icon: FileText,
   },
   {
+    title: "Open a Chat",
+    description:
+      "Workspace-aware general assistant. Same agent that powers WhatsApp /chat.",
+    to: "/chat",
+    icon: MessageSquare,
+  },
+  {
     title: "Talk to the Mentor",
     description:
-      "Ask anything; uses your project context and remembered strengths and gaps.",
+      "Project-scoped coach with read-only access to your repo. Browses files when needed.",
     to: "/mentor",
     icon: GraduationCap,
   },

@@ -7,6 +7,7 @@ import {
   ChatSessionOut,
   api,
 } from "../../api/client";
+import { EditableTitle } from "../../components/common/EditableTitle";
 import { PageHeader } from "../../components/common/PageHeader";
 import { StatusPill } from "../../components/common/StatusPill";
 import { Badge } from "../../components/ui/badge";
@@ -88,6 +89,11 @@ export function InterviewerSessionPage() {
     }
   }
 
+  async function rename(next: string) {
+    const updated = await api.renameInterviewerSession(id, next || null);
+    setSession(updated);
+  }
+
   if (messages === null) {
     return (
       <div className="space-y-3">
@@ -106,7 +112,14 @@ export function InterviewerSessionPage() {
   return (
     <div>
       <PageHeader
-        title={session?.title || "Mock interview"}
+        title={
+          <EditableTitle
+            value={session?.title ?? null}
+            onSave={rename}
+            placeholder="Mock interview"
+            readOnly={!session || session.status === "ended"}
+          />
+        }
         description={
           <span className="flex items-center gap-3 flex-wrap">
             <span className="capitalize">
@@ -116,6 +129,14 @@ export function InterviewerSessionPage() {
             <span className="capitalize">
               {target.level?.replace("_", " ")}
             </span>
+            {target.scope === "resume" && target.resume_filename ? (
+              <>
+                <span className="text-muted-foreground">·</span>
+                <span title="Resume-driven session">
+                  resume: {target.resume_filename}
+                </span>
+              </>
+            ) : null}
             <span className="text-muted-foreground">·</span>
             <span className="inline-flex items-center gap-1">
               <Clock4 className="h-3.5 w-3.5" />

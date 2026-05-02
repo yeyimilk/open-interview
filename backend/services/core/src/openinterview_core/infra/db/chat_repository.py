@@ -12,6 +12,33 @@ from openinterview_db import (
 )
 
 
+def _derive_title(text: str, *, max_chars: int = 60) -> str:
+    """Make a short title from a free-form first message.
+
+    Take the first line, collapse internal whitespace, strip a leading
+    slash-command (so "/help me debug" becomes "help me debug"), and
+    truncate at the nearest word boundary up to ``max_chars`` with a
+    trailing ellipsis.
+    """
+    first_line = next(
+        (line for line in text.splitlines() if line.strip()),
+        "",
+    )
+    s = " ".join(first_line.split())
+    if s.startswith("/"):
+        # The grammar uses leading slash for commands — for free-form chat
+        # we don't want titles like "/help me debug" / "/please explain".
+        s = s.lstrip("/").strip()
+    if not s:
+        return "Untitled"
+    if len(s) <= max_chars:
+        return s
+    cut = s.rfind(" ", 0, max_chars)
+    if cut < 20:  # word boundary too close to the start; hard-cut instead
+        cut = max_chars
+    return s[:cut].rstrip() + "…"
+
+
 class SqlChatRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
@@ -81,6 +108,28 @@ class SqlChatRepository:
         sess = await self._s.get(ChatSession, session_id)
         if sess:
             sess.turn_count = (sess.turn_count or 0) + 1
+            # Auto-title on the first user message: pick a short, sensible
+            # snippet of `content`. Users can rename via the PATCH endpoint
+            # later. We deliberately only trigger when the title is still
+            # NULL — once the user (or the agent that created the session)
+            # has set a title we never silently overwrite it.
+            if role == "user" and not sess.title and content.strip():
+                sess.title = _derive_title(content)
+        await self._s.commit()
+        await self._s.refresh(row)
+        return row
+
+    async def update_session_title(
+        self, *, session_id: UUID, user_id: UUID, title: str | None
+    ) -> ChatSession | None:
+        """Rename a session. ``title=None`` clears it back to "Untitled"."""
+        row = await self._s.get(ChatSession, session_id)
+        if row is None or row.user_id != user_id:
+            return None
+        # Normalise: strip whitespace, cap to a sane length, treat empty as None.
+        if title is not None:
+            title = title.strip()[:256] or None
+        row.title = title
         await self._s.commit()
         await self._s.refresh(row)
         return row

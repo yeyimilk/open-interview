@@ -14,6 +14,7 @@ from openinterview_schemas import (
     CreateInterviewerSessionRequest,
     InterviewEvaluationOut,
     SendInterviewerMessageRequest,
+    UpdateChatSessionRequest,
 )
 
 from ...domain.interviewer import InterviewerAgent, SessionEvaluator
@@ -23,6 +24,7 @@ from ...domain.qa import QAGenerationService
 from ...infra.db import get_session_dep
 from ...infra.db.chat_repository import SqlChatRepository
 from ...infra.db.qa_repository import SqlQARepository
+from ...infra.db.resume_repository import SqlResumeRepository
 from ..deps import get_current_user
 from ..sse import sse_format
 
@@ -73,41 +75,80 @@ async def create_session(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session_dep),
 ) -> ChatSessionOut:
-    qa_repo = SqlQARepository(session)
-    qa_set = await qa_repo.get_or_create_set(
-        user_id=user.id,
-        project_id=body.project_id,
-        position=body.position,
-        level=body.level,
-    )
-    # If the QA set is empty / pending, kick off generation in background.
-    if qa_set.total == 0 and qa_set.status in ("pending", "failed"):
-        import asyncio as _asyncio
+    import asyncio as _asyncio
 
-        svc = _qa_service(request)
-        _asyncio.create_task(
-            svc.run(
-                user_id=user.id,
-                project_id=body.project_id,
-                position=body.position,
-                level=body.level,
-            )
+    qa_repo = SqlQARepository(session)
+    svc = _qa_service(request)
+
+    target_label: str  # used in the session title
+    if body.resume_id is not None:
+        resume = await SqlResumeRepository(session).get(
+            user_id=user.id, resume_id=body.resume_id
         )
+        if resume is None:
+            raise HTTPException(status_code=404, detail="resume not found")
+        qa_set = await qa_repo.get_or_create_set_for_resume(
+            user_id=user.id,
+            resume_id=body.resume_id,
+            position=body.position,
+            level=body.level,
+        )
+        if qa_set.total == 0 and qa_set.status in ("pending", "failed"):
+            _asyncio.create_task(
+                svc.run_for_resume(
+                    user_id=user.id,
+                    resume_id=body.resume_id,
+                    position=body.position,
+                    level=body.level,
+                )
+            )
+        # Trim filename for a clean title.
+        fname = (resume.original_filename or "resume").rsplit(".", 1)[0][:40]
+        target_label = f" — {fname}"
+        target_extra = {
+            "scope": "resume",
+            "resume_id": str(body.resume_id),
+            "resume_filename": resume.original_filename,
+        }
+        # Resume-scoped sessions are NOT pinned to a single project.
+        session_project_id = None
+    else:
+        assert body.project_id is not None  # validator guarantees this
+        qa_set = await qa_repo.get_or_create_set(
+            user_id=user.id,
+            project_id=body.project_id,
+            position=body.position,
+            level=body.level,
+        )
+        if qa_set.total == 0 and qa_set.status in ("pending", "failed"):
+            _asyncio.create_task(
+                svc.run(
+                    user_id=user.id,
+                    project_id=body.project_id,
+                    position=body.position,
+                    level=body.level,
+                )
+            )
+        target_label = ""
+        target_extra = {"scope": "project"}
+        session_project_id = body.project_id
 
     chat_repo = SqlChatRepository(session)
     sess = await chat_repo.create_session(
         user_id=user.id,
         mode="interviewer",
-        project_id=body.project_id,
-        title=f"Mock interview ({body.position}, {body.level})",
+        project_id=session_project_id,
+        title=f"Mock interview ({body.position}, {body.level}){target_label}",
         target={
             "qa_set_id": str(qa_set.id),
             "position": body.position,
             "level": body.level,
             "n_questions": int(body.n_questions),
             "asked_ids": [],
+            "recent_claims": [],
             "current_question": "",
             "current_ideal_answer": "",
+            **target_extra,
         },
     )
     await session.commit()
@@ -126,9 +167,15 @@ async def create_session(
                 prev_ideal_answer="",
             )
             if first.get("chosen_question"):
+                claim_text = first.get("claim")
+                claim_block = (
+                    f"About this on your resume:\n> {claim_text}\n\n"
+                    if claim_text
+                    else ""
+                )
                 opening = (
                     "Welcome! Let's begin. Take your time to think through your answer.\n\n"
-                    f"Question 1:\n{first['chosen_question']}"
+                    f"{claim_block}Question 1:\n{first['chosen_question']}"
                 )
                 await chat_repo.append_message(
                     session_id=sess.id,
@@ -145,6 +192,9 @@ async def create_session(
                     new_target["asked_ids"] = [
                         str(i) for i in first.get("asked_ids", set())
                     ]
+                    new_target["recent_claims"] = first.get(
+                        "recent_claims", []
+                    )
                     new_target["current_question"] = first.get(
                         "chosen_question", ""
                     )
@@ -197,6 +247,34 @@ async def list_sessions(
     ]
 
 
+@router.patch("/sessions/{session_id}", response_model=ChatSessionOut)
+async def update_session(
+    session_id: UUID,
+    body: UpdateChatSessionRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> ChatSessionOut:
+    repo = SqlChatRepository(session)
+    sess = await repo.get_session(user_id=user.id, session_id=session_id)
+    if sess is None or sess.mode != "interviewer":
+        raise HTTPException(status_code=404, detail="not found")
+    updated = await repo.update_session_title(
+        session_id=session_id, user_id=user.id, title=body.title
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return ChatSessionOut(
+        id=updated.id,
+        mode=updated.mode,
+        title=updated.title,
+        project_id=updated.project_id,
+        target=updated.target,
+        status=updated.status,
+        turn_count=updated.turn_count,
+        created_at=updated.created_at,
+    )
+
+
 @router.get("/sessions/{session_id}/messages", response_model=list[ChatMessageOut])
 async def list_messages(
     session_id: UUID,
@@ -241,6 +319,7 @@ async def send_message(
     asked_ids = {UUID(x) for x in target.get("asked_ids", [])}
     prev_q = str(target.get("current_question") or "")
     prev_a = str(target.get("current_ideal_answer") or "")
+    recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
 
     await repo.append_message(
         session_id=session_id, user_id=user.id, role="user", content=body.content
@@ -261,6 +340,7 @@ async def send_message(
                 asked_ids=asked_ids,
                 prev_question=prev_q,
                 prev_ideal_answer=prev_a,
+                recent_claims=recent_claims,
             ):
                 kind = ev.get("type", "message")
                 if kind == "token":
@@ -289,7 +369,12 @@ async def send_message(
                 )
                 if row:
                     new_target = dict(row.target or {})
-                    new_target["asked_ids"] = meta.get("asked_ids", new_target.get("asked_ids", []))
+                    new_target["asked_ids"] = meta.get(
+                        "asked_ids", new_target.get("asked_ids", [])
+                    )
+                    new_target["recent_claims"] = meta.get(
+                        "recent_claims", new_target.get("recent_claims", [])
+                    )
                     new_target["current_question"] = meta.get("chosen_question", "")
                     new_target["current_ideal_answer"] = meta.get("ideal_answer", "")
                     row.target = new_target

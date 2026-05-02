@@ -249,3 +249,274 @@ async def test_interviewer_full_flow(tmp_path) -> None:
             assert ev["overall_score"] == pytest.approx(3.5)
             assert "good FastAPI knowledge" in ev["strengths"]
             assert any("async cancellation" in w for w in ev["weaknesses"])
+
+
+@pytest.mark.asyncio
+async def test_interviewer_rejects_when_neither_target_provided(tmp_path) -> None:
+    """The schema requires exactly one of resume_id / project_id; sending
+    neither should fail validation rather than silently picking one."""
+    app = create_app(_settings(tmp_path))
+    app.state.gateway = FakeGateway()
+    app.state.vector_store = InMemoryVectorStore()
+
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            tok = await _register_login(c, "neither@x.com")
+            h = {"Authorization": f"Bearer {tok}"}
+
+            r = await c.post(
+                "/api/v1/interviewer/sessions",
+                headers=h,
+                json={
+                    "position": "swe_generic",
+                    "level": "mid",
+                    "n_questions": 2,
+                },
+            )
+            assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_resume_driven_interview_full_flow(tmp_path) -> None:
+    """Resume-scoped mock interview: pre-seed a resume + a resume-scoped
+    QA set with a claim-tagged item and confirm the agent surfaces the
+    claim in its assistant message."""
+    app = create_app(_settings(tmp_path))
+    app.state.gateway = FakeGateway()
+    app.state.vector_store = InMemoryVectorStore()
+
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            tok = await _register_login(c, "resi@x.com")
+            h = {"Authorization": f"Bearer {tok}"}
+
+            from openinterview_db import QAItem, QASet, Resume
+            sm = app.state.db.sessionmaker
+            user_id = uuid.UUID(
+                (await c.get("/api/v1/me", headers=h)).json()["id"]
+            )
+            resume_id = uuid.uuid4()
+            qa_set_id = uuid.uuid4()
+            claim_text = "Cut p99 latency 40% on the search service"
+            async with sm() as s:
+                s.add(
+                    Resume(
+                        id=resume_id,
+                        user_id=user_id,
+                        original_filename="ada.pdf",
+                        content_type="application/pdf",
+                        text="Ada — Staff SWE",
+                        parsed={
+                            "name": "Ada",
+                            "skills": ["Postgres"],
+                            "claims": [{"text": claim_text}],
+                        },
+                    )
+                )
+                s.add(
+                    QASet(
+                        id=qa_set_id,
+                        user_id=user_id,
+                        project_id=None,
+                        resume_id=resume_id,
+                        scope="resume",
+                        position="swe_generic",
+                        level="mid",
+                        status="ready",
+                        total=1,
+                    )
+                )
+                s.add(
+                    QAItem(
+                        qa_set_id=qa_set_id,
+                        user_id=user_id,
+                        category="experience_claim",
+                        level="mid",
+                        question="Walk me through how you cut p99 latency.",
+                        ideal_answer="Profile, find hot path, batch / cache.",
+                        evidence=[],
+                        difficulty=3,
+                        tags=["latency"],
+                        meta={
+                            "claim": claim_text,
+                            "claim_section": "experience",
+                            "source_project_id": None,
+                        },
+                    )
+                )
+                await s.commit()
+
+            r = await c.post(
+                "/api/v1/interviewer/sessions",
+                headers=h,
+                json={
+                    "resume_id": str(resume_id),
+                    "position": "swe_generic",
+                    "level": "mid",
+                    "n_questions": 1,
+                },
+            )
+            assert r.status_code == 200, r.text
+            sess = r.json()
+            sid = sess["id"]
+            # Resume-scoped sessions don't pin a project.
+            assert sess["project_id"] is None
+            assert sess["target"]["scope"] == "resume"
+            assert sess["target"]["resume_filename"] == "ada.pdf"
+
+            # The first question is auto-asked at session creation; pull
+            # messages and confirm the claim was surfaced in the assistant turn.
+            r = await c.get(
+                f"/api/v1/interviewer/sessions/{sid}/messages", headers=h
+            )
+            assert r.status_code == 200
+            msgs = r.json()
+            assert any(
+                m["role"] == "assistant" and claim_text in m["content"]
+                for m in msgs
+            )
+
+            # Title incorporates the resume filename so the user can tell
+            # at-a-glance which resume drove this session.
+            assert "ada" in (sess["title"] or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_general_session_streaming(tmp_path) -> None:
+    """The /general API mirrors the mentor flow but without project tools.
+
+    Verifies create → list → SSE stream → message persistence → end."""
+    app = create_app(_settings(tmp_path))
+    app.state.gateway = FakeGateway()
+    app.state.vector_store = InMemoryVectorStore()
+
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            tok = await _register_login(c, "g@x.com")
+            h = {"Authorization": f"Bearer {tok}"}
+
+            r = await c.post(
+                "/api/v1/general/sessions", headers=h, json={"title": "Hello"}
+            )
+            assert r.status_code == 200, r.text
+            sess = r.json()
+            sid = sess["id"]
+            assert sess["mode"] == "general"
+            assert sess["project_id"] is None
+
+            # The session shows up in the list (and only in /general's list).
+            r = await c.get("/api/v1/general/sessions", headers=h)
+            assert r.status_code == 200
+            assert any(s["id"] == sid for s in r.json())
+            r = await c.get("/api/v1/mentor/sessions", headers=h)
+            assert r.status_code == 200
+            assert all(s["id"] != sid for s in r.json())
+
+            # Stream a turn.
+            r = await c.post(
+                f"/api/v1/general/sessions/{sid}/messages",
+                headers=h,
+                json={"content": "Quick brainstorm please."},
+            )
+            assert r.status_code == 200
+            events = _parse_sse(r.text)
+            kinds = [e[0] for e in events]
+            assert "token" in kinds
+            assert "done" in kinds
+            full = next(d.get("content", "") for k, d in events if k == "done")
+            assert "thoughtful coaching response" in full
+
+            # User + assistant messages are both persisted.
+            r = await c.get(
+                f"/api/v1/general/sessions/{sid}/messages", headers=h
+            )
+            assert r.status_code == 200
+            roles = [m["role"] for m in r.json()]
+            assert roles.count("user") == 1
+            assert roles.count("assistant") == 1
+
+            # End the session.
+            r = await c.post(f"/api/v1/general/sessions/{sid}:end", headers=h)
+            assert r.status_code == 200
+            assert r.json()["status"] == "ended"
+
+
+@pytest.mark.asyncio
+async def test_general_session_auto_titles_then_rename(tmp_path) -> None:
+    """A session created with title=None should be auto-titled by the
+    first user message; the PATCH endpoint then lets users rename it."""
+    app = create_app(_settings(tmp_path))
+    app.state.gateway = FakeGateway()
+    app.state.vector_store = InMemoryVectorStore()
+
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            tok = await _register_login(c, "rename@x.com")
+            h = {"Authorization": f"Bearer {tok}"}
+
+            r = await c.post("/api/v1/general/sessions", headers=h, json={})
+            sid = r.json()["id"]
+            assert r.json()["title"] is None
+
+            # Streaming a turn must trigger auto-titling on the user message.
+            r = await c.post(
+                f"/api/v1/general/sessions/{sid}/messages",
+                headers=h,
+                json={"content": "Quick brainstorm please, brand new product."},
+            )
+            assert r.status_code == 200
+            r = await c.get("/api/v1/general/sessions", headers=h)
+            sess = next(s for s in r.json() if s["id"] == sid)
+            assert sess["title"] == "Quick brainstorm please, brand new product."
+
+            # Rename to something custom.
+            r = await c.patch(
+                f"/api/v1/general/sessions/{sid}",
+                headers=h,
+                json={"title": "Brainstorm: Q3 launch"},
+            )
+            assert r.status_code == 200
+            assert r.json()["title"] == "Brainstorm: Q3 launch"
+
+            # Clear with null → goes back to untitled.
+            r = await c.patch(
+                f"/api/v1/general/sessions/{sid}",
+                headers=h,
+                json={"title": None},
+            )
+            assert r.status_code == 200
+            assert r.json()["title"] is None
+
+
+@pytest.mark.asyncio
+async def test_general_session_rejects_mentor_id(tmp_path) -> None:
+    """A mentor session id must not be mistaken for a /general session —
+    /general endpoints filter by mode='general' and 404 otherwise."""
+    app = create_app(_settings(tmp_path))
+    app.state.gateway = FakeGateway()
+    app.state.vector_store = InMemoryVectorStore()
+
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            tok = await _register_login(c, "g2@x.com")
+            h = {"Authorization": f"Bearer {tok}"}
+
+            # Create a *mentor* session, then try to fetch it through /general.
+            r = await c.post("/api/v1/mentor/sessions", headers=h, json={})
+            mentor_sid = r.json()["id"]
+
+            r = await c.get(
+                f"/api/v1/general/sessions/{mentor_sid}/messages", headers=h
+            )
+            assert r.status_code == 404
+            r = await c.post(
+                f"/api/v1/general/sessions/{mentor_sid}/messages",
+                headers=h,
+                json={"content": "hi"},
+            )
+            assert r.status_code == 404

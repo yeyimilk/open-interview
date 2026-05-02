@@ -34,11 +34,14 @@ from .qa import (
 from .chat import (
     ChatMessageOut,
     ChatSessionOut,
+    CreateGeneralSessionRequest,
     CreateInterviewerSessionRequest,
     CreateMentorSessionRequest,
     InterviewEvaluationOut,
+    SendGeneralMessageRequest,
     SendInterviewerMessageRequest,
     SendMentorMessageRequest,
+    UpdateChatSessionRequest,
 )
 
 __all__ = [
@@ -82,7 +85,10 @@ __all__ = [
     "ChatMessageOut",
     "CreateMentorSessionRequest",
     "SendMentorMessageRequest",
+    "CreateGeneralSessionRequest",
+    "SendGeneralMessageRequest",
     "CreateInterviewerSessionRequest",
     "SendInterviewerMessageRequest",
     "InterviewEvaluationOut",
+    "UpdateChatSessionRequest",
 ]

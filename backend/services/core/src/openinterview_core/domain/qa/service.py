@@ -8,11 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ...infra.db.qa_repository import SqlQARepository
 from ...infra.db.project_repository import SqlProjectRepository
+from ...infra.db.resume_repository import SqlResumeRepository
 from ...infra.vector import VectorStore, vector_collection_for_user_project
 from ..projects.embedder import GatewayEmbedder
 from .generator import ShardGenerator
 from .merger import QAMerger
 from .planner import QAPlanner
+from .resume_generator import ResumeShardGenerator
+from .resume_planner import plan_for_resume
 
 
 class QAGenerationService:
@@ -114,6 +117,117 @@ class QAGenerationService:
                         project_summary=project.summary,
                         shard=sh,
                         level=level,
+                    )
+                except Exception:
+                    return []
+
+        item_lists = await asyncio.gather(*(_one(s) for s in shards))
+
+        merger = QAMerger(max_total=self._max)
+        merged = merger.merge(item_lists)
+
+        async with self._sm() as s:
+            repo = SqlQARepository(s)
+            await repo.replace_items(
+                qa_set_id=qa_set_id, user_id=user_id, items=merged
+            )
+            await repo.set_status(qa_set_id=qa_set_id, status="ready")
+
+    # ------------------------------------------------------------------
+    # Resume-scoped pipeline
+    # ------------------------------------------------------------------
+
+    async def run_for_resume(
+        self,
+        *,
+        user_id: UUID,
+        resume_id: UUID,
+        position: str,
+        level: str,
+    ) -> UUID:
+        """Build a resume-scoped QA bank.
+
+        Mirrors :meth:`run` but the planner walks the parsed resume + claim
+        mappings instead of the project tree, and per-claim shards optionally
+        ground evidence in the linked project's vector store.
+        """
+        async with self._sm() as s:
+            repo = SqlQARepository(s)
+            qa_set = await repo.get_or_create_set_for_resume(
+                user_id=user_id,
+                resume_id=resume_id,
+                position=position,
+                level=level,
+            )
+            await repo.set_status(qa_set_id=qa_set.id, status="running", error=None)
+            qa_set_id = qa_set.id
+
+        try:
+            await self._run_resume_inner(
+                user_id=user_id,
+                resume_id=resume_id,
+                qa_set_id=qa_set_id,
+                position=position,
+                level=level,
+            )
+        except Exception as e:
+            async with self._sm() as s:
+                await SqlQARepository(s).set_status(
+                    qa_set_id=qa_set_id, status="failed", error=str(e)[:500]
+                )
+            raise
+        return qa_set_id
+
+    async def _run_resume_inner(
+        self,
+        *,
+        user_id: UUID,
+        resume_id: UUID,
+        qa_set_id: UUID,
+        position: str,
+        level: str,
+    ) -> None:
+        async with self._sm() as s:
+            resume = await SqlResumeRepository(s).get(
+                user_id=user_id, resume_id=resume_id
+            )
+            mappings = await SqlResumeRepository(s).list_mappings(
+                user_id=user_id, resume_id=resume_id
+            )
+        if resume is None:
+            raise ValueError("resume not found")
+
+        parsed = resume.parsed if isinstance(resume.parsed, dict) else {}
+        candidate_name = parsed.get("name") if isinstance(parsed, dict) else None
+
+        shards, ctx_by_query = plan_for_resume(
+            parsed=parsed,
+            claim_mappings=list(mappings),
+            position=position,
+            level=level,
+        )
+
+        embedder = GatewayEmbedder(self._gw, logical_model=self._embed)
+        gen = ResumeShardGenerator(
+            gateway=self._gw,
+            embedder=embedder,
+            vector_store=self._vs,
+            logical_model=self._chat,
+        )
+        sem = asyncio.Semaphore(3)
+
+        async def _one(sh):
+            ctx = ctx_by_query.get(sh.retrieval_query)
+            if ctx is None:
+                return []
+            async with sem:
+                try:
+                    return await gen.generate(
+                        user_id=user_id,
+                        shard=sh,
+                        context=ctx,
+                        level=level,
+                        candidate_name=candidate_name,
                     )
                 except Exception:
                     return []

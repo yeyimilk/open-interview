@@ -6,9 +6,10 @@ import {
   Home,
   LogOut,
   Menu,
+  MessageSquare,
+  Mic,
   Settings,
   Sparkles,
-  Mic,
 } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
@@ -43,6 +44,7 @@ const NAV: NavItem[] = [
   { to: "/", label: "Home", icon: Home },
   { to: "/projects", label: "Projects", icon: Folders },
   { to: "/resumes", label: "Resume", icon: FileText },
+  { to: "/chat", label: "Chat", icon: MessageSquare },
   { to: "/mentor", label: "Mentor", icon: GraduationCap },
   { to: "/interviewer", label: "Interview", icon: Mic },
   { to: "/settings", label: "Settings", icon: Settings },

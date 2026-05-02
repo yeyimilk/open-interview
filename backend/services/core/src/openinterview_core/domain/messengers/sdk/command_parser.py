@@ -5,8 +5,12 @@ Recognized commands (case-insensitive, leading slash optional):
     /link <token>                   Bind this remote user to an app account
     /chat                           Enter general chat mode (workspace-wide)
     /mentor [project_name]          Start (or resume) a mentor session
-    /interview <project> <level>    Start an interviewer session
-                                      level ∈ {junior, mid, senior, lead}
+    /interview [resume-or-project] [level]
+                                    Start an interviewer session
+                                      - default: most recent resume, level=mid
+                                      - target can be a resume filename / id
+                                        or, with --project, a project name / id
+                                      - level ∈ {junior, mid, senior, lead}
     /exit (alias /end /stop /quit)  Leave the current mode
     /status                         Show current session + project
     /help                           List commands
@@ -110,21 +114,32 @@ def parse(text: str) -> ParsedCommand:
         return ParsedCommand(kind="mentor", args=args, raw=raw)
 
     if head == "interview":
-        args = {}
-        # Allow either: /interview <project> <level>
-        # or:           /interview <project>            (level defaults to mid)
-        if len(parts) >= 3:
-            args["project"] = " ".join(parts[1:-1]).strip()
-            args["level"] = parts[-1].lower()
-        elif len(parts) == 2:
-            args["project"] = parts[1]
+        # Grammar (resume-first; /interview alone uses most recent resume):
+        #   /interview                              → resume mode, latest resume, mid
+        #   /interview <target>                     → resume mode, target=<target>, mid
+        #   /interview <target> <level>             → resume mode, target=<target>, <level>
+        #   /interview --project [<target>] [level] → project mode, same shape
+        # The trailing token is treated as a level only when it matches one
+        # of VALID_LEVELS; otherwise it's part of the target name.
+        args: dict[str, str] = {}
+        rest = parts[1:]
+        # Detect "--project" flag.
+        if rest and rest[0].lower() in ("--project", "-p"):
+            args["scope"] = "project"
+            rest = rest[1:]
+        else:
+            args["scope"] = "resume"
+
+        # Strip a trailing level token if present.
+        if rest and rest[-1].lower() in VALID_LEVELS:
+            args["level"] = rest[-1].lower()
+            rest = rest[:-1]
+        else:
             args["level"] = "mid"
-        if "level" in args and args["level"] not in VALID_LEVELS:
-            return ParsedCommand(
-                kind="help",
-                args={"reason": f"unknown level '{args['level']}'"},
-                raw=raw,
-            )
+
+        if rest:
+            args["target"] = " ".join(rest).strip()
+
         return ParsedCommand(kind="interview", args=args, raw=raw)
 
     if head in ("end", "exit", "stop", "quit"):
@@ -147,7 +162,10 @@ HELP_TEXT = (
     "Modes\n"
     "  /chat                          General chat (full workspace access)\n"
     "  /mentor [project]              Mentor mode (project-scoped)\n"
-    "  /interview <project> <level>   Interviewer (junior|mid|senior|lead)\n"
+    "  /interview [resume] [level]    Interviewer, resume-driven by default\n"
+    "                                  · /interview                   (latest resume, mid)\n"
+    "                                  · /interview ada.pdf senior\n"
+    "                                  · /interview --project demo    (legacy single-project)\n"
     "  /exit                          Leave the current mode\n"
     "  /status                        Show what mode you're in\n"
     "\n"

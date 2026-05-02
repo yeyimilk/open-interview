@@ -1,3 +1,13 @@
+"""HTTP surface for ``/general`` (a.k.a. /chat) — the workspace-aware
+chat mode that mirrors the WhatsApp ``/chat`` command.
+
+Unlike Mentor (which has the project-coach system prompt and tool loop)
+and Interviewer (which is a structured turn-taking flow), /general is a
+plain assistant with memory recall plus a one-line workspace brief
+("you have N projects, M resumes, recent: foo, bar"). The agent layer
+calls ``MentorAgent.general_stream`` so this stays in lock-step with
+the messenger flow.
+"""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -11,20 +21,21 @@ from openinterview_db import User
 from openinterview_schemas import (
     ChatMessageOut,
     ChatSessionOut,
-    CreateMentorSessionRequest,
-    SendMentorMessageRequest,
+    CreateGeneralSessionRequest,
+    SendGeneralMessageRequest,
     UpdateChatSessionRequest,
 )
 
 from ...domain.memory import MemoryDistiller, MemoryRetriever
 from ...domain.mentor import MentorAgent
 from ...domain.projects.embedder import GatewayEmbedder
+from ...domain.workspace import workspace_brief
 from ...infra.db import get_session_dep
 from ...infra.db.chat_repository import SqlChatRepository
 from ..deps import get_current_user
 from ..sse import sse_format
 
-router = APIRouter(prefix="/mentor", tags=["mentor"])
+router = APIRouter(prefix="/general", tags=["general"])
 
 
 def _retriever(request: Request) -> MemoryRetriever:
@@ -58,14 +69,14 @@ def _distiller(request: Request) -> MemoryDistiller:
 
 @router.post("/sessions", response_model=ChatSessionOut)
 async def create_session(
-    body: CreateMentorSessionRequest,
+    body: CreateGeneralSessionRequest,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session_dep),
 ) -> ChatSessionOut:
     sess = await SqlChatRepository(session).create_session(
         user_id=user.id,
-        mode="mentor",
-        project_id=body.project_id,
+        mode="general",
+        project_id=None,
         title=body.title,
     )
     return ChatSessionOut(
@@ -86,7 +97,7 @@ async def list_sessions(
     session: AsyncSession = Depends(get_session_dep),
 ) -> list[ChatSessionOut]:
     items = await SqlChatRepository(session).list_sessions(
-        user_id=user.id, mode="mentor"
+        user_id=user.id, mode="general"
     )
     return [
         ChatSessionOut(
@@ -112,7 +123,7 @@ async def update_session(
 ) -> ChatSessionOut:
     repo = SqlChatRepository(session)
     sess = await repo.get_session(user_id=user.id, session_id=session_id)
-    if sess is None or sess.mode != "mentor":
+    if sess is None or sess.mode != "general":
         raise HTTPException(status_code=404, detail="not found")
     updated = await repo.update_session_title(
         session_id=session_id, user_id=user.id, title=body.title
@@ -139,7 +150,7 @@ async def list_messages(
 ) -> list[ChatMessageOut]:
     repo = SqlChatRepository(session)
     sess = await repo.get_session(user_id=user.id, session_id=session_id)
-    if sess is None:
+    if sess is None or sess.mode != "general":
         raise HTTPException(status_code=404, detail="not found")
     items = await repo.list_messages(user_id=user.id, session_id=session_id)
     return [
@@ -158,14 +169,14 @@ async def list_messages(
 @router.post("/sessions/{session_id}/messages")
 async def send_message(
     session_id: UUID,
-    body: SendMentorMessageRequest,
+    body: SendGeneralMessageRequest,
     request: Request,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session_dep),
 ) -> StreamingResponse:
     repo = SqlChatRepository(session)
     sess = await repo.get_session(user_id=user.id, session_id=session_id)
-    if sess is None:
+    if sess is None or sess.mode != "general":
         raise HTTPException(status_code=404, detail="not found")
 
     # Persist user message immediately so it shows in history.
@@ -173,51 +184,27 @@ async def send_message(
         session_id=session_id, user_id=user.id, role="user", content=body.content
     )
 
-    project_id = body.project_id or sess.project_id
     agent = _agent(request)
-    distiller = _distiller(request)
-
     sm: async_sessionmaker[AsyncSession] = request.app.state.db.sessionmaker
+    ws_ctx = await workspace_brief(sessionmaker=sm, user_id=user.id)
 
     async def _gen() -> AsyncIterator[bytes]:
         chunks: list[str] = []
-        tool_trace: list[dict] = []
         try:
-            async for ev in agent.stream(
+            async for ev in agent.general_stream(
                 user_id=user.id,
                 session_id=session_id,
-                project_id=project_id,
+                workspace_brief=ws_ctx,
                 user_input=body.content,
             ):
-                kind = ev.get("type", "message")
-                if kind == "token":
+                if ev.get("type") == "token":
                     chunks.append(ev.get("content", ""))
-                elif kind == "tool_call":
-                    tool_trace.append(
-                        {
-                            "name": ev.get("name", ""),
-                            "args": ev.get("args"),
-                            "preview": None,
-                            "done": False,
-                        }
-                    )
-                elif kind == "tool_result":
-                    name = ev.get("name", "")
-                    preview = ev.get("preview")
-                    # attach to the most recent matching un-done call
-                    for entry in reversed(tool_trace):
-                        if entry["name"] == name and not entry["done"]:
-                            entry["preview"] = preview
-                            entry["done"] = True
-                            break
-                yield sse_format(kind, ev)
-        except Exception as e:
+                yield sse_format(ev.get("type", "message"), ev)
+        except Exception as e:  # noqa: BLE001
             yield sse_format("error", {"message": str(e)})
             return
 
         full = "".join(chunks)
-        meta: dict | None = {"tools": tool_trace} if tool_trace else None
-        # Persist assistant message + (best-effort) update long-term memory.
         try:
             async with sm() as s:
                 await SqlChatRepository(s).append_message(
@@ -225,10 +212,10 @@ async def send_message(
                     user_id=user.id,
                     role="assistant",
                     content=full,
-                    meta=meta,
                 )
-            # Distillation happens explicitly when the user ends the session.
         except Exception:
+            # Don't break the stream if persistence fails — the user already
+            # received the answer; we just lose it from history.
             pass
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
@@ -243,11 +230,13 @@ async def end_session(
 ) -> ChatSessionOut:
     repo = SqlChatRepository(session)
     sess = await repo.get_session(user_id=user.id, session_id=session_id)
-    if sess is None:
+    if sess is None or sess.mode != "general":
         raise HTTPException(status_code=404, detail="not found")
     await repo.end_session(session_id=session_id)
 
-    # Fire-and-forget memory distillation.
+    # General chat doesn't drive an evaluation — but distilling memory is
+    # cheap and lets long-term recall benefit from the conversation, so we
+    # fire-and-forget the distiller exactly like Mentor's :end hook.
     import asyncio as _asyncio
 
     distiller = _distiller(request)

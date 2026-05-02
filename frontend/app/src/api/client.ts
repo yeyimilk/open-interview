@@ -394,17 +394,43 @@ export const api = {
     request<ChatMessageOut[]>(`/mentor/sessions/${id}/messages`),
   endMentorSession: (id: string) =>
     request<ChatSessionOut>(`/mentor/sessions/${id}:end`, { method: "POST" }),
+  renameMentorSession: (id: string, title: string | null) =>
+    request<ChatSessionOut>(`/mentor/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+
+  // general /chat (workspace-aware, no project pin, no tools)
+  createGeneralSession: (title: string | null) =>
+    request<ChatSessionOut>("/general/sessions", {
+      method: "POST",
+      body: JSON.stringify({ title }),
+    }),
+  listGeneralSessions: () =>
+    request<ChatSessionOut[]>("/general/sessions"),
+  listGeneralMessages: (id: string) =>
+    request<ChatMessageOut[]>(`/general/sessions/${id}/messages`),
+  endGeneralSession: (id: string) =>
+    request<ChatSessionOut>(`/general/sessions/${id}:end`, { method: "POST" }),
+  renameGeneralSession: (id: string, title: string | null) =>
+    request<ChatSessionOut>(`/general/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
 
   // interviewer
   createInterviewerSession: (
-    project_id: string,
-    position: string,
-    level: string,
-    n_questions: number
+    body: {
+      resume_id?: string;
+      project_id?: string;
+      position: string;
+      level: string;
+      n_questions: number;
+    }
   ) =>
     request<ChatSessionOut>("/interviewer/sessions", {
       method: "POST",
-      body: JSON.stringify({ project_id, position, level, n_questions }),
+      body: JSON.stringify(body),
     }),
   listInterviewerSessions: () =>
     request<ChatSessionOut[]>("/interviewer/sessions"),
@@ -419,6 +445,11 @@ export const api = {
     request<InterviewEvaluationOut>(
       `/interviewer/sessions/${id}/evaluation`
     ),
+  renameInterviewerSession: (id: string, title: string | null) =>
+    request<ChatSessionOut>(`/interviewer/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
 
   // messaging (whatsapp / future channels)
   listMessagingPlugins: () =>

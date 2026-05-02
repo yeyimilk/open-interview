@@ -318,31 +318,74 @@ class MessengerKernel:
         user_id: UUID,
         args: dict[str, str],
     ) -> None:
-        project = args.get("project")
+        # Default flow is resume-driven; ``--project`` opts into the legacy
+        # single-project flow. ``target`` may be empty (use the most recent
+        # resume) or a resume / project name / id / short-id prefix.
+        scope = args.get("scope", "resume")
+        target = args.get("target")
         level = args.get("level", "mid")
-        if not project:
+
+        if scope == "project":
+            if not target:
+                await self._deliver(
+                    plugin,
+                    to=_reply_to(turn),
+                    text=(
+                        "Usage: /interview --project <project> [level]\n"
+                        "Levels: junior | mid | senior | lead"
+                    ),
+                )
+                return
+            project_id = await self._agent.resolve_project_id(
+                user_id=user_id, name_or_id=target
+            )
+            if project_id is None:
+                await self._deliver(
+                    plugin,
+                    to=_reply_to(turn),
+                    text=f"Project '{target}' not found. Upload one in the web app first.",
+                )
+                return
+            sid, first_q = await self._agent.start_interview_session(
+                user_id=user_id,
+                project_id=project_id,
+                position="swe_generic",
+                level=level,
+            )
+            await self._active.set(
+                user_id=user_id,
+                channel=turn.channel,
+                chat_session_id=sid,
+                mode="interviewer",
+            )
             await self._deliver(
                 plugin,
                 to=_reply_to(turn),
-                text=(
-                    "Usage: /interview <project> <level>\n"
-                    "Levels: junior | mid | senior | lead"
-                ),
+                text=f"Interview started ({level}, project mode).\n\n{first_q}",
             )
             return
-        project_id = await self._agent.resolve_project_id(
-            user_id=user_id, name_or_id=project
+
+        # Resume-driven (default).
+        resume_id = await self._agent.resolve_resume_id(
+            user_id=user_id, name_or_id=target
         )
-        if project_id is None:
-            await self._deliver(
-                plugin,
-                to=_reply_to(turn),
-                text=f"Project '{project}' not found. Upload one in the web app first.",
+        if resume_id is None:
+            hint = (
+                "Upload a resume in the web app (or pass --project <name> to "
+                "use the legacy single-project flow)."
             )
+            if target:
+                msg = f"Resume '{target}' not found. {hint}"
+            else:
+                msg = (
+                    "You don't have any resumes uploaded yet. "
+                    f"{hint}"
+                )
+            await self._deliver(plugin, to=_reply_to(turn), text=msg)
             return
-        sid, first_q = await self._agent.start_interview_session(
+        sid, first_q = await self._agent.start_interview_session_for_resume(
             user_id=user_id,
-            project_id=project_id,
+            resume_id=resume_id,
             position="swe_generic",
             level=level,
         )
@@ -355,7 +398,7 @@ class MessengerKernel:
         await self._deliver(
             plugin,
             to=_reply_to(turn),
-            text=f"Interview started ({level}).\n\n{first_q}",
+            text=f"Interview started ({level}, resume-driven).\n\n{first_q}",
         )
 
     async def _cmd_end(

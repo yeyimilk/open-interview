@@ -16,8 +16,10 @@ class SqlQARepository:
     async def get_or_create_set(
         self, *, user_id: UUID, project_id: UUID, position: str, level: str
     ) -> QASet:
+        """Project-scoped QA set (legacy / single-project flow)."""
         q = select(QASet).where(
             QASet.user_id == user_id,
+            QASet.scope == "project",
             QASet.project_id == project_id,
             QASet.position == position,
             QASet.level == level,
@@ -28,6 +30,37 @@ class SqlQARepository:
         row = QASet(
             user_id=user_id,
             project_id=project_id,
+            resume_id=None,
+            scope="project",
+            position=position,
+            level=level,
+            status="pending",
+            total=0,
+        )
+        self._s.add(row)
+        await self._s.commit()
+        await self._s.refresh(row)
+        return row
+
+    async def get_or_create_set_for_resume(
+        self, *, user_id: UUID, resume_id: UUID, position: str, level: str
+    ) -> QASet:
+        """Resume-scoped QA set (preferred)."""
+        q = select(QASet).where(
+            QASet.user_id == user_id,
+            QASet.scope == "resume",
+            QASet.resume_id == resume_id,
+            QASet.position == position,
+            QASet.level == level,
+        )
+        existing = (await self._s.execute(q)).scalar_one_or_none()
+        if existing:
+            return existing
+        row = QASet(
+            user_id=user_id,
+            project_id=None,
+            resume_id=resume_id,
+            scope="resume",
             position=position,
             level=level,
             status="pending",
@@ -90,6 +123,7 @@ class SqlQARepository:
                     ],
                     difficulty=it.difficulty,
                     tags=it.tags,
+                    meta=getattr(it, "meta", None),
                 )
             )
             n += 1

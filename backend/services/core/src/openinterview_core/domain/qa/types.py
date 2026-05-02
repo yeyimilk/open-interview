@@ -28,3 +28,5 @@ class QAItem:
     evidence: list[QAEvidence] = field(default_factory=list)
     difficulty: int = 3
     tags: list[str] = field(default_factory=list)
+    # Resume-scope context only: { "claim", "claim_section", "source_project_id" }.
+    meta: dict | None = None

@@ -5,7 +5,8 @@ facade. Verifies the full inbound dispatch path:
   unlinked plain message   → bot tells the user to scan QR
   /mentor                  → starts mentor session, opening message sent
   plain message after that → routed to mentor
-  /interview <p> mid       → starts interview session
+  /interview [target] [lvl] → starts interview (resume-driven by default;
+                              `--project` opts into legacy project mode)
   /end                     → ends session, summary sent
 """
 from __future__ import annotations
@@ -48,6 +49,12 @@ class FakeAgentFacade:
             return None
         return uuid.uuid4()
 
+    async def resolve_resume_id(self, *, user_id, name_or_id):
+        self.calls.append(("resolve_resume_id", {"user_id": user_id, "name": name_or_id}))
+        if name_or_id and name_or_id.lower() in ("missing", "unknown"):
+            return None
+        return uuid.uuid4()
+
     async def start_mentor_session(self, *, user_id, project_id):
         self.calls.append(("start_mentor", {"user_id": user_id, "project_id": project_id}))
         sid = uuid.uuid4()
@@ -63,6 +70,16 @@ class FakeAgentFacade:
         sid = uuid.uuid4()
         self.next_session_id = sid
         return sid, "Question 1: Tell me about your project."
+
+    async def start_interview_session_for_resume(
+        self, *, user_id, resume_id, position, level
+    ):
+        self.calls.append(
+            ("start_interview_resume", {"level": level, "resume_id": resume_id})
+        )
+        sid = uuid.uuid4()
+        self.next_session_id = sid
+        return sid, "Question 1: Walk me through your latency win."
 
     async def send_interview_message(self, *, user_id, session_id, content):
         self.calls.append(("send_interview", {"content": content}))
@@ -248,17 +265,22 @@ async def test_link_with_bad_token_rejects(env):
 
 
 @pytest.mark.asyncio
-async def test_interview_flow(env):
+async def test_interview_flow_resume_default(env):
+    """`/interview <target> <level>` is now resume-driven by default."""
     store = PairTokenStore(env["sm"])
     token, _ = await store.mint(user_id=env["user_id"], channel="fakeapp")
     await env["kernel"].handle_turn(env["plugin"], _turn(f"/link {token}", msg_id="m1"))
 
     env["plugin"].sent.clear()
     await env["kernel"].handle_turn(
-        env["plugin"], _turn("/interview demo mid", msg_id="m2")
+        env["plugin"], _turn("/interview ada.pdf senior", msg_id="m2")
     )
     assert any("Question 1" in s[1] for s in env["plugin"].sent)
-    assert any(c[0] == "start_interview" and c[1]["level"] == "mid" for c in env["facade"].calls)
+    assert any("resume-driven" in s[1] for s in env["plugin"].sent)
+    assert any(
+        c[0] == "start_interview_resume" and c[1]["level"] == "senior"
+        for c in env["facade"].calls
+    )
 
     env["plugin"].sent.clear()
     await env["kernel"].handle_turn(env["plugin"], _turn("My answer is X.", msg_id="m3"))
@@ -270,6 +292,55 @@ async def test_interview_flow(env):
 
 
 @pytest.mark.asyncio
+async def test_interview_bare_uses_latest_resume(env):
+    """`/interview` with no args resolves the latest resume."""
+    store = PairTokenStore(env["sm"])
+    token, _ = await store.mint(user_id=env["user_id"], channel="fakeapp")
+    await env["kernel"].handle_turn(env["plugin"], _turn(f"/link {token}", msg_id="m1"))
+
+    env["plugin"].sent.clear()
+    await env["kernel"].handle_turn(
+        env["plugin"], _turn("/interview", msg_id="m2")
+    )
+    # FakeAgentFacade.resolve_resume_id returns a uuid for None target.
+    assert any(
+        c[0] == "resolve_resume_id" and c[1]["name"] is None
+        for c in env["facade"].calls
+    )
+    assert any(c[0] == "start_interview_resume" for c in env["facade"].calls)
+
+
+@pytest.mark.asyncio
+async def test_interview_project_flag_uses_legacy_path(env):
+    """`--project demo` opts into the legacy single-project flow."""
+    store = PairTokenStore(env["sm"])
+    token, _ = await store.mint(user_id=env["user_id"], channel="fakeapp")
+    await env["kernel"].handle_turn(env["plugin"], _turn(f"/link {token}", msg_id="m1"))
+
+    env["plugin"].sent.clear()
+    await env["kernel"].handle_turn(
+        env["plugin"], _turn("/interview --project demo mid", msg_id="m2")
+    )
+    assert any("project mode" in s[1] for s in env["plugin"].sent)
+    assert any(c[0] == "start_interview" for c in env["facade"].calls)
+    # The resume resolver wasn't consulted at all on this path.
+    assert not any(c[0] == "resolve_resume_id" for c in env["facade"].calls)
+
+
+@pytest.mark.asyncio
+async def test_interview_with_unknown_resume_fails_gracefully(env):
+    store = PairTokenStore(env["sm"])
+    token, _ = await store.mint(user_id=env["user_id"], channel="fakeapp")
+    await env["kernel"].handle_turn(env["plugin"], _turn(f"/link {token}", msg_id="m1"))
+
+    env["plugin"].sent.clear()
+    await env["kernel"].handle_turn(
+        env["plugin"], _turn("/interview missing mid", msg_id="m2")
+    )
+    assert any("not found" in s[1] for s in env["plugin"].sent)
+
+
+@pytest.mark.asyncio
 async def test_interview_with_unknown_project_fails_gracefully(env):
     store = PairTokenStore(env["sm"])
     token, _ = await store.mint(user_id=env["user_id"], channel="fakeapp")
@@ -277,7 +348,7 @@ async def test_interview_with_unknown_project_fails_gracefully(env):
 
     env["plugin"].sent.clear()
     await env["kernel"].handle_turn(
-        env["plugin"], _turn("/interview unknown mid", msg_id="m2")
+        env["plugin"], _turn("/interview --project unknown mid", msg_id="m2")
     )
     assert any("not found" in s[1] for s in env["plugin"].sent)
 

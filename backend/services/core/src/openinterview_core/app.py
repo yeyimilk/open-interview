@@ -11,6 +11,7 @@ from openinterview_logging import configure_logging, get_logger
 from .api.v1 import api_keys as api_keys_v1
 from .api.v1 import audio as audio_v1
 from .api.v1 import auth as auth_v1
+from .api.v1 import general as general_v1
 from .api.v1 import health as health_v1
 from .api.v1 import interviewer as interviewer_v1
 from .api.v1 import me as me_v1
@@ -61,6 +62,36 @@ async def _dev_patch_columns(conn) -> None:
                 "ADD COLUMN filter_mode VARCHAR(16) "
                 "NOT NULL DEFAULT 'dms_only'"
             )
+        )
+
+    # qa_sets: resume scoping. Older DBs have a NOT NULL project_id and no
+    # resume_id / scope columns. We add the new columns and relax the NOT NULL
+    # on project_id so a row can be project- *or* resume-scoped.
+    if not await _has_column("qa_sets", "resume_id"):
+        await conn.execute(
+            text(
+                "ALTER TABLE qa_sets "
+                "ADD COLUMN resume_id UUID NULL"
+            )
+        )
+    if not await _has_column("qa_sets", "scope"):
+        await conn.execute(
+            text(
+                "ALTER TABLE qa_sets "
+                "ADD COLUMN scope VARCHAR(16) NOT NULL DEFAULT 'project'"
+            )
+        )
+    # Relaxing NOT NULL is a Postgres-only operation; SQLite re-creates tables
+    # for us via create_all so this branch is a no-op there.
+    if dialect == "postgresql":
+        await conn.execute(
+            text("ALTER TABLE qa_sets ALTER COLUMN project_id DROP NOT NULL")
+        )
+
+    # qa_items.meta: optional resume-claim context for individual questions.
+    if not await _has_column("qa_items", "meta"):
+        await conn.execute(
+            text("ALTER TABLE qa_items ADD COLUMN meta JSON NULL")
         )
 
 
@@ -136,6 +167,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(resumes_v1.router, prefix=api_prefix)
     app.include_router(qa_v1.router, prefix=api_prefix)
     app.include_router(mentor_v1.router, prefix=api_prefix)
+    app.include_router(general_v1.router, prefix=api_prefix)
     app.include_router(interviewer_v1.router, prefix=api_prefix)
     app.include_router(audio_v1.router, prefix=api_prefix)
     app.include_router(messaging_v1.router, prefix=api_prefix)

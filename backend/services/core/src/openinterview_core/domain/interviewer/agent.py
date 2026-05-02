@@ -4,6 +4,7 @@ optionally probes, then moves on. Uses LangGraph for the per-turn flow.
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Any, TypedDict
@@ -16,7 +17,7 @@ from openinterview_schemas import ChatMessage as ChatMessageDTO
 from ...infra.db.qa_repository import SqlQARepository
 from ...infra.db.chat_repository import SqlChatRepository
 from ..memory.recall import MemoryRetriever
-from .picker import pick_next
+from .picker import _claim_signature, pick_next
 
 
 class _State(TypedDict, total=False):
@@ -162,6 +163,7 @@ class InterviewerAgent:
         asked_ids: set,
         prev_question: str,
         prev_ideal_answer: str,
+        recent_claims: list[str] | None = None,
     ) -> dict:
         # Reuse the streaming pipeline and collapse to a single result dict.
         chunks: list[str] = []
@@ -174,6 +176,7 @@ class InterviewerAgent:
             asked_ids=asked_ids,
             prev_question=prev_question,
             prev_ideal_answer=prev_ideal_answer,
+            recent_claims=recent_claims,
         ):
             t = ev.get("type")
             if t == "token":
@@ -188,6 +191,8 @@ class InterviewerAgent:
             "chosen_question": meta.get("chosen_question", ""),
             "ideal_answer": meta.get("ideal_answer", ""),
             "asked_ids": {UUID(x) for x in meta.get("asked_ids", [])},
+            "claim": meta.get("claim"),
+            "recent_claims": meta.get("recent_claims", []),
         }
 
     async def stream(
@@ -200,6 +205,7 @@ class InterviewerAgent:
         asked_ids: set,
         prev_question: str,
         prev_ideal_answer: str,
+        recent_claims: list[str] | None = None,
     ) -> AsyncIterator[dict]:
         """Stream tokens progressively.
 
@@ -239,10 +245,14 @@ class InterviewerAgent:
                 user_id=user_id, qa_set_id=qa_set_id
             )
         asked = set(asked_ids or set())
+        recent_dq: deque[str] = deque(
+            (recent_claims or []), maxlen=3
+        )
         pick = pick_next(
             items=items,
             asked_question_ids=asked,
             long_term=recalled.long_term,
+            recent_claims=recent_dq,
         )
 
         chunks: list[str] = []
@@ -270,6 +280,7 @@ class InterviewerAgent:
                 yield _emit(f"Quick follow-up: {probe}\n\n")
 
         # 2) Stream next question (chunked for UI typing effect)
+        chosen_claim: str | None = None
         if pick is None:
             yield _emit(
                 "We've covered the planned questions. Use the 'End session' "
@@ -283,6 +294,25 @@ class InterviewerAgent:
             chosen_item_id = pick.id
             chosen_q = pick.question
             ideal = pick.ideal_answer
+
+            # Resume-scope: surface the claim so the candidate knows what's
+            # being probed. We pull it from the picked item's meta blob.
+            pick_meta = getattr(pick, "meta", None)
+            if isinstance(pick_meta, dict):
+                claim_text = (pick_meta.get("claim") or "").strip()
+                section = pick_meta.get("claim_section") or ""
+                if claim_text:
+                    chosen_claim = claim_text
+                    header = "About this on your resume:\n"
+                    header += f"> {claim_text}"
+                    if section:
+                        header += f"  ({section})"
+                    header += "\n\n"
+                    yield _emit(header)
+                    sig = _claim_signature(pick)
+                    if sig:
+                        recent_dq.append(sig)
+
             yield _emit("Next question:\n")
             # Smaller chunks (~24 chars) make the UI feel like typing.
             q = pick.question
@@ -300,6 +330,8 @@ class InterviewerAgent:
                 "chosen_question": chosen_q,
                 "ideal_answer": ideal,
                 "asked_ids": [str(i) for i in asked],
+                "claim": chosen_claim,
+                "recent_claims": list(recent_dq),
             },
         }
 

@@ -46,6 +46,15 @@ class AgentFacade(Protocol):
         self, *, user_id: UUID, name_or_id: str | None
     ) -> UUID | None: ...
 
+    async def resolve_resume_id(
+        self, *, user_id: UUID, name_or_id: str | None
+    ) -> UUID | None:
+        """Resolve a resume by UUID, short-id prefix, or filename match.
+
+        ``None`` for ``name_or_id`` means "most recent resume". Returns
+        ``None`` if the user has no resumes (or the lookup fails)."""
+        ...
+
     async def start_mentor_session(
         self, *, user_id: UUID, project_id: UUID | None
     ) -> tuple[UUID, str]:
@@ -64,7 +73,18 @@ class AgentFacade(Protocol):
         position: str,
         level: str,
     ) -> tuple[UUID, str]:
-        """Returns (chat_session_id, first_question_text)."""
+        """Returns (chat_session_id, first_question_text). Project-scoped."""
+        ...
+
+    async def start_interview_session_for_resume(
+        self,
+        *,
+        user_id: UUID,
+        resume_id: UUID,
+        position: str,
+        level: str,
+    ) -> tuple[UUID, str]:
+        """Resume-driven counterpart. Returns (chat_session_id, opener)."""
         ...
 
     async def send_interview_message(

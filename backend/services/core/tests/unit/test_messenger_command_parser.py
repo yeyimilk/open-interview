@@ -34,22 +34,43 @@ def test_mentor_with_project():
     assert p.args["project"] == "my cool app"
 
 
-def test_interview_with_level():
-    p = cp.parse("/interview demo mid")
+def test_interview_bare_uses_resume_default():
+    # /interview alone → resume mode, latest resume, default level.
+    p = cp.parse("/interview")
     assert p.kind == "interview"
-    assert p.args == {"project": "demo", "level": "mid"}
+    assert p.args == {"scope": "resume", "level": "mid"}
 
 
-def test_interview_default_level():
-    p = cp.parse("/interview demo")
+def test_interview_target_with_level():
+    p = cp.parse("/interview ada.pdf senior")
     assert p.kind == "interview"
-    assert p.args == {"project": "demo", "level": "mid"}
+    assert p.args == {"scope": "resume", "target": "ada.pdf", "level": "senior"}
 
 
-def test_interview_unknown_level_falls_to_help():
+def test_interview_target_without_level_defaults_to_mid():
+    p = cp.parse("/interview ada.pdf")
+    assert p.kind == "interview"
+    assert p.args == {"scope": "resume", "target": "ada.pdf", "level": "mid"}
+
+
+def test_interview_non_level_trailing_token_stays_in_target():
+    # "wizard" is not a recognised level — it's now just part of the target
+    # (resume filename / project name) rather than rejected outright.
     p = cp.parse("/interview demo wizard")
-    assert p.kind == "help"
-    assert "wizard" in p.args["reason"]
+    assert p.kind == "interview"
+    assert p.args == {"scope": "resume", "target": "demo wizard", "level": "mid"}
+
+
+def test_interview_project_flag():
+    p = cp.parse("/interview --project demo senior")
+    assert p.kind == "interview"
+    assert p.args == {"scope": "project", "target": "demo", "level": "senior"}
+
+
+def test_interview_short_project_flag():
+    p = cp.parse("/interview -p demo")
+    assert p.kind == "interview"
+    assert p.args == {"scope": "project", "target": "demo", "level": "mid"}
 
 
 def test_end_status_help_aliases():

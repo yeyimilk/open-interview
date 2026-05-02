@@ -14,6 +14,7 @@ from openinterview_db import ChatMessage, ChatSession, ClaimMapping, Project, Re
 from ..interviewer import InterviewerAgent, SessionEvaluator
 from ..mentor import MentorAgent
 from ..qa import QAGenerationService
+from ..workspace import workspace_brief
 from ...infra.db.chat_repository import SqlChatRepository
 from ...infra.db.qa_repository import SqlQARepository
 from .sdk.agent_facade import (
@@ -63,6 +64,48 @@ class CoreAgentFacade(AgentFacade):
         self._interviewer = interviewer
         self._eval = evaluator
         self._qa = qa
+
+    async def resolve_resume_id(
+        self, *, user_id: UUID, name_or_id: str | None
+    ) -> UUID | None:
+        """Resolve a resume the same way ``get_resume_detail`` does — UUID
+        first, then 8-char short-id prefix, then case-insensitive filename
+        substring. ``None`` returns the most recent resume."""
+        async with self._sm() as s:
+            if not name_or_id:
+                row = (
+                    await s.execute(
+                        select(Resume)
+                        .where(Resume.user_id == user_id)
+                        .order_by(Resume.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                return row.id if row else None
+            # Try UUID exact match.
+            try:
+                rid = UUID(name_or_id)
+            except (ValueError, AttributeError):
+                rid = None
+            if rid is not None:
+                row = await s.get(Resume, rid)
+                if row and row.user_id == user_id:
+                    return row.id
+            rows = (
+                await s.execute(
+                    select(Resume)
+                    .where(Resume.user_id == user_id)
+                    .order_by(Resume.created_at.desc())
+                )
+            ).scalars().all()
+            low = name_or_id.lower()
+            for r in rows:
+                if str(r.id).lower().startswith(low):
+                    return r.id
+            for r in rows:
+                if low in (r.original_filename or "").lower():
+                    return r.id
+        return None
 
     async def resolve_project_id(
         self, *, user_id: UUID, name_or_id: str | None
@@ -226,6 +269,112 @@ class CoreAgentFacade(AgentFacade):
             await s.commit()
         return sid, opening
 
+    async def start_interview_session_for_resume(
+        self,
+        *,
+        user_id: UUID,
+        resume_id: UUID,
+        position: str,
+        level: str,
+    ) -> tuple[UUID, str]:
+        """Resume-driven kickoff over WhatsApp / messaging. Mirrors
+        :meth:`start_interview_session` but routes through the resume QA
+        pipeline. The session has no pinned ``project_id``; the question
+        header surfaces the claim being probed."""
+        async with self._sm() as s:
+            resume = await s.get(Resume, resume_id)
+            if resume is None or resume.user_id != user_id:
+                return (UUID(int=0), "Resume not found.")
+            qa_repo = SqlQARepository(s)
+            qa_set = await qa_repo.get_or_create_set_for_resume(
+                user_id=user_id,
+                resume_id=resume_id,
+                position=position,
+                level=level,
+            )
+            chat_repo = SqlChatRepository(s)
+            fname = (resume.original_filename or "resume").rsplit(".", 1)[0][:40]
+            sess = await chat_repo.create_session(
+                user_id=user_id,
+                mode="interviewer",
+                project_id=None,
+                title=f"Mock interview ({position}, {level}) — {fname}",
+                target={
+                    "qa_set_id": str(qa_set.id),
+                    "scope": "resume",
+                    "resume_id": str(resume_id),
+                    "resume_filename": resume.original_filename,
+                    "position": position,
+                    "level": level,
+                    "n_questions": 5,
+                    "asked_ids": [],
+                    "recent_claims": [],
+                    "current_question": "",
+                    "current_ideal_answer": "",
+                },
+            )
+            await s.commit()
+            sid = sess.id
+            qa_set_id = qa_set.id
+            qa_total = qa_set.total
+
+        if qa_total == 0:
+            import asyncio as _asyncio
+
+            _asyncio.create_task(
+                self._qa.run_for_resume(
+                    user_id=user_id,
+                    resume_id=resume_id,
+                    position=position,
+                    level=level,
+                )
+            )
+            return (
+                sid,
+                "Generating interview questions from your resume — "
+                "try /status in a few seconds.",
+            )
+
+        first = await self._interviewer.turn(
+            user_id=user_id,
+            session_id=sid,
+            qa_set_id=qa_set_id,
+            user_input="",
+            asked_ids=set(),
+            prev_question="",
+            prev_ideal_answer="",
+            recent_claims=[],
+        )
+        question = first.get("chosen_question") or "Tell me about a recent project."
+        claim = first.get("claim")
+        opening = (
+            f"About this on your resume:\n> {claim}\n\nQuestion 1:\n{question}"
+            if claim
+            else f"Question 1:\n{question}"
+        )
+
+        async with self._sm() as s:
+            chat_repo = SqlChatRepository(s)
+            await chat_repo.append_message(
+                session_id=sid,
+                user_id=user_id,
+                role="assistant",
+                content=opening,
+                meta={"opening": True},
+            )
+            row = await chat_repo.get_session(user_id=user_id, session_id=sid)
+            if row is not None:
+                new_target = dict(row.target or {})
+                new_target["asked_ids"] = [
+                    str(i) for i in first.get("asked_ids", set())
+                ]
+                new_target["recent_claims"] = first.get("recent_claims", [])
+                new_target["current_question"] = first.get("chosen_question", "")
+                new_target["current_ideal_answer"] = first.get("ideal_answer", "")
+                row.target = new_target
+            await s.commit()
+        return sid, opening
+
     async def send_interview_message(
         self, *, user_id: UUID, session_id: UUID, content: str
     ) -> str:
@@ -243,6 +392,7 @@ class CoreAgentFacade(AgentFacade):
             asked_ids = {UUID(x) for x in target.get("asked_ids", [])}
             prev_q = str(target.get("current_question") or "")
             prev_a = str(target.get("current_ideal_answer") or "")
+            recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
             await chat_repo.append_message(
                 session_id=session_id, user_id=user_id, role="user", content=content
             )
@@ -259,6 +409,7 @@ class CoreAgentFacade(AgentFacade):
             asked_ids=asked_ids,
             prev_question=prev_q,
             prev_ideal_answer=prev_a,
+            recent_claims=recent_claims,
         )
         text = result.get("final", "").strip() or "(no response)"
 
@@ -275,6 +426,7 @@ class CoreAgentFacade(AgentFacade):
             if row is not None:
                 new_target = dict(row.target or {})
                 new_target["asked_ids"] = [str(i) for i in result.get("asked_ids", set())]
+                new_target["recent_claims"] = result.get("recent_claims", [])
                 new_target["current_question"] = result.get("chosen_question", "")
                 new_target["current_ideal_answer"] = result.get("ideal_answer", "")
                 row.target = new_target
@@ -348,7 +500,7 @@ class CoreAgentFacade(AgentFacade):
         # no mentor framing and no project tools — just memory recall +
         # plain LLM. This avoids the "let me dive deeper into X" loop the
         # full mentor prompt was inducing on workspace-less questions.
-        ws_ctx = await self._workspace_brief(user_id=user_id)
+        ws_ctx = await workspace_brief(sessionmaker=self._sm, user_id=user_id)
 
         async with self._sm() as s:
             await SqlChatRepository(s).append_message(
@@ -377,33 +529,7 @@ class CoreAgentFacade(AgentFacade):
             await s.commit()
         return full
 
-    async def _workspace_brief(self, *, user_id: UUID) -> str:
-        """One-line summary of what's in the workspace, for context."""
-        async with self._sm() as s:
-            n_projects = (
-                await s.execute(
-                    select(func.count(Project.id)).where(Project.user_id == user_id)
-                )
-            ).scalar_one()
-            n_resumes = (
-                await s.execute(
-                    select(func.count(Resume.id)).where(Resume.user_id == user_id)
-                )
-            ).scalar_one()
-            top_projects = (
-                await s.execute(
-                    select(Project.name)
-                    .where(Project.user_id == user_id, Project.status == "ready")
-                    .order_by(Project.created_at.desc())
-                    .limit(3)
-                )
-            ).scalars().all()
-        if n_projects == 0 and n_resumes == 0:
-            return ""
-        bits = [f"{n_projects} project(s)", f"{n_resumes} resume(s)"]
-        if top_projects:
-            bits.append("recent: " + ", ".join(top_projects))
-        return "; ".join(bits)
+
 
     # ---------- workspace introspection ------------------------------------
 
