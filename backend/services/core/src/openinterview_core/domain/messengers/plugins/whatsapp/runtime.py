@@ -38,6 +38,7 @@ from ...sdk.plugin import (
     MessengerPlugin,
 )
 from ...sdk.types import InboundTurn
+from .formatter import to_whatsapp
 
 log = get_logger(__name__)
 
@@ -276,11 +277,12 @@ class WhatsAppPlugin(MessengerPlugin):
         if account_id is None:
             log.warning("whatsapp_send_no_account", jid_tail=to[-6:])
             return
+        rendered = to_whatsapp(text)
         try:
             r = await self._http.post(
                 f"{self._bridge}/send",
                 headers=self._auth_headers(),
-                json={"account_id": account_id, "to_jid": to, "text": text},
+                json={"account_id": account_id, "to_jid": to, "text": rendered},
             )
             if r.status_code >= 400:
                 log.error(
