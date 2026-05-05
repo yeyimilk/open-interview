@@ -20,6 +20,7 @@ from .api.v1 import mentor as mentor_v1
 from .api.v1 import messaging as messaging_v1
 from .api.v1 import projects as projects_v1
 from .api.v1 import qa as qa_v1
+from .api.v1 import realtime as realtime_v1
 from .api.v1 import resumes as resumes_v1
 from .config import Settings, get_settings
 from .infra.blob import build_blob_storage
@@ -190,6 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(interviewer_v1.router, prefix=api_prefix)
     app.include_router(audio_v1.router, prefix=api_prefix)
     app.include_router(messaging_v1.router, prefix=api_prefix)
+    app.include_router(realtime_v1.router, prefix=api_prefix)
 
     # Singleton GatewayClient (used by domain services). Per-user model
     # preferences are looked up automatically via ``override_resolver`` so

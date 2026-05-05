@@ -62,7 +62,8 @@ setup: .venv frontend-install wabridge-install
 	               -e backend/libs/openinterview_db
 	$(PIP) install -e "backend/services/core[test]" \
 	               -e backend/services/gateway \
-	               -e backend/services/workers
+	               -e backend/services/workers \
+	               -e backend/services/realtime_gateway
 	$(PIP) install aiosqlite
 
 frontend-install:
@@ -93,6 +94,7 @@ _kill-host:
 	-@pkill -f "honcho start -f Procfile" 2>/dev/null || true
 	-@pkill -f "python -m openinterview_core" 2>/dev/null || true
 	-@pkill -f "python -m openinterview_gateway" 2>/dev/null || true
+	-@pkill -f "python -m openinterview_realtime" 2>/dev/null || true
 	-@pkill -f "arq openinterview_workers.worker.WorkerSettings" 2>/dev/null || true
 	-@pkill -f "vite" 2>/dev/null || true
 	-@pkill -f "tsx watch src/server.ts" 2>/dev/null || true
@@ -122,6 +124,10 @@ gateway:
 workers:
 	@if [ ! -f .env ]; then echo "ERROR: .env missing. Run: cp config/env.dev.example .env"; exit 1; fi
 	$(PY) -m arq openinterview_workers.worker.WorkerSettings
+
+realtime:
+	@if [ ! -f .env ]; then echo "ERROR: .env missing. Run: cp config/env.dev.example .env"; exit 1; fi
+	OPENINTERVIEW_RELOAD=1 $(PY) -m openinterview_realtime
 
 web:
 	cd frontend/app && npm run dev

@@ -177,6 +177,12 @@ export interface ChatMessageOut {
   created_at: string;
 }
 
+export interface RealtimeTicket {
+  ws_url: string;
+  ticket: string;
+  expires_at: number;
+}
+
 export interface InterviewEvaluationOut {
   id: string;
   session_id: string;
@@ -528,6 +534,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ title }),
     }),
+  getRealtimeTicket: (id: string) =>
+    request<RealtimeTicket>(
+      `/interviewer/sessions/${id}/realtime/ticket`,
+      { method: "POST" }
+    ),
 
   // messaging (whatsapp / future channels)
   listMessagingPlugins: () =>

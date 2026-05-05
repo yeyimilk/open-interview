@@ -1,4 +1,4 @@
-import { ArrowLeft, Clock4, Flag, Mic, Type } from "lucide-react";
+import { ArrowLeft, Clock4, Flag, Mic, Radio, Type } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -8,6 +8,7 @@ import {
   api,
 } from "../../api/client";
 import { AudioStreamingChat } from "../chat/AudioStreamingChat";
+import { LiveAudioChat } from "../chat/live/LiveAudioChat";
 import { EditableTitle } from "../../components/common/EditableTitle";
 import { PageHeader } from "../../components/common/PageHeader";
 import { StatusPill } from "../../components/common/StatusPill";
@@ -24,7 +25,7 @@ export function InterviewerSessionPage() {
   const [session, setSession] = useState<ChatSessionOut | null>(null);
   const [messages, setMessages] = useState<ChatMessageOut[] | null>(null);
   const [ending, setEnding] = useState(false);
-  const [mode, setMode] = useState<"text" | "audio">("text");
+  const [mode, setMode] = useState<"text" | "audio" | "live">("text");
   const messagesRef = useRef<ChatMessageOut[] | null>(null);
   messagesRef.current = messages;
 
@@ -197,10 +198,28 @@ export function InterviewerSessionPage() {
               >
                 <Mic className="h-3.5 w-3.5" /> Voice
               </button>
+              <button
+                type="button"
+                onClick={() => setMode("live")}
+                className={cn(
+                  "px-2.5 py-1 rounded text-xs inline-flex items-center gap-1",
+                  mode === "live"
+                    ? "bg-background shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                title="Continuous live audio chat over WebSocket."
+              >
+                <Radio className="h-3.5 w-3.5" /> Live
+              </button>
             </div>
             {mode === "audio" ? (
               <span className="text-xs text-muted-foreground">
                 Tip: speak naturally — we score pace, fillers, and confidence.
+              </span>
+            ) : mode === "live" ? (
+              <span className="text-xs text-muted-foreground">
+                Live mode: a streaming WebSocket conversation; turns are still
+                transcribed and saved.
               </span>
             ) : null}
           </div>
@@ -213,12 +232,19 @@ export function InterviewerSessionPage() {
                   placeholder="Type your answer here..."
                   onAfterSend={reload}
                 />
-              ) : (
+              ) : mode === "audio" ? (
                 <AudioStreamingChat
                   initialMessages={messages}
                   endpoint={`/interviewer/sessions/${id}/messages/audio`}
                   disabled={session?.status === "ended"}
                   onAfterSend={reload}
+                />
+              ) : (
+                <LiveAudioChat
+                  sessionId={id}
+                  initialMessages={messages}
+                  disabled={session?.status === "ended"}
+                  onAfterTurn={reload}
                 />
               )}
             </CardContent>

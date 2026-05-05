@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     gateway_url: str = "http://localhost:9000"
     gateway_service_token: str = "dev-service-token-change-me"
 
+    # Realtime (live-audio) gateway
+    realtime_public_url: str = "ws://localhost:9200/ws/interview"
+    openinterview_realtime_secret: str = "dev-realtime-secret-change-me"
+    realtime_internal_token: str = "dev-internal-token-change-me"
+    realtime_ticket_ttl_s: int = 60
+
     # Security
     openinterview_master_key: str = "dev-master-key-change-me-32bytes!"
     jwt_secret: str = "dev-jwt-secret-change-me"
