@@ -28,6 +28,7 @@ node_modules/
 # Data (never commit user data)
 data/
 var/
+pretrained_models/
 
 # OS
 .DS_Store

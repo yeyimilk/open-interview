@@ -21,7 +21,7 @@ PYTEST := .venv/bin/pytest
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup frontend-install wabridge-install \
+.PHONY: help setup setup-speaker frontend-install wabridge-install \
         infra infra-down infra-reset infra-logs \
         _kill-host down down-all \
         core gateway workers web wabridge all \
@@ -30,11 +30,12 @@ PYTEST := .venv/bin/pytest
 help:
 	@echo "Targets:"
 	@echo "  setup        - create venv, install backend libs+services in editable mode, frontend deps"
+	@echo "  setup-speaker - install optional live-audio speaker verification deps"
 	@echo "  infra        - start postgres/redis/chroma in Docker (background)"
 	@echo "  infra-down   - stop infra (keeps data)"
 	@echo "  infra-reset  - stop infra AND wipe volumes (postgres + chroma data)"
 	@echo "  infra-logs   - tail infra logs"
-	@echo "  down         - stop everything: host dev procs (core/gateway/workers/web) + infra"
+	@echo "  down         - stop everything: host dev procs (core/gateway/realtime/workers/web) + infra"
 	@echo "  down-all     - same as down, plus wipe infra volumes"
 	@echo "  core         - run core FastAPI service with hot reload"
 	@echo "  gateway      - run gateway service with hot reload"
@@ -49,7 +50,7 @@ help:
 
 # ---------- setup ----------
 
-setup: .venv frontend-install wabridge-install
+setup: .venv setup-speaker frontend-install wabridge-install
 	@echo "Setup complete. Copy config/env.dev.example to .env if you haven't yet:"
 	@echo "  cp config/env.dev.example .env"
 
@@ -65,6 +66,9 @@ setup: .venv frontend-install wabridge-install
 	               -e backend/services/workers \
 	               -e backend/services/realtime_gateway
 	$(PIP) install aiosqlite
+
+setup-speaker: .venv
+	$(PIP) install -e "backend/services/realtime_gateway[speaker]"
 
 frontend-install:
 	cd frontend/app && npm install
@@ -86,7 +90,7 @@ infra-reset:
 infra-logs:
 	docker compose -f infra/docker-compose.dev.yml logs -f
 
-# Stop host dev processes started via `make core/gateway/workers/web`.
+# Stop host dev processes started via `make core/gateway/realtime/workers/web`.
 # Matches the exact module/script invocations to avoid killing unrelated procs.
 _kill-host:
 	-@pkill -f "overmind start -f Procfile" 2>/dev/null || true
@@ -137,15 +141,51 @@ wabridge:
 
 # ---------- run everything in one terminal ----------
 
-# Starts infra (Docker) and then a process manager that runs core/gateway/workers/web together.
+# Starts infra (Docker) and then a process manager that runs core/gateway/realtime/workers/web together.
 # Order of preference: overmind (best, supports per-proc tmux), hivemind, honcho (pip).
 all: infra wait-infra
 	@if [ ! -f .env ]; then echo "ERROR: .env missing. Run: cp config/env.dev.example .env"; exit 1; fi
-	@$(PY) -c "import arq, openinterview_core, openinterview_gateway, openinterview_workers" 2>/dev/null || \
+	@$(PY) -c "import arq, openinterview_core, openinterview_gateway, openinterview_realtime, openinterview_workers" 2>/dev/null || \
 		( echo "Some Python services not installed in venv. Running 'make setup'..."; $(MAKE) setup )
 	@if [ ! -x frontend/app/node_modules/.bin/vite ]; then \
 		echo "Installing frontend dependencies..."; \
 		cd frontend/app && npm install; \
+	fi
+	@if command -v overmind >/dev/null 2>&1; then \
+		if [ -S .overmind.sock ]; then \
+			status_output=$$(overmind status 2>&1); \
+			status_code=$$?; \
+			if [ $$status_code -eq 0 ]; then \
+				echo "Overmind is already running. Use 'overmind connect <proc>' to attach, or 'make down' before restarting."; \
+				exit 0; \
+			elif printf "%s\n" "$$status_output" | grep -Eq "connect: connection refused|no such file|No such file"; then \
+				echo "Removing stale Overmind socket."; \
+				rm -f .overmind.sock; \
+			else \
+				printf "%s\n" "$$status_output"; \
+				exit $$status_code; \
+			fi; \
+		fi; \
+		echo "Using overmind. Tip: 'overmind connect <proc>' in another terminal to attach."; \
+		overmind start -f Procfile; \
+	elif command -v hivemind >/dev/null 2>&1; then \
+		echo "Using hivemind."; \
+		hivemind Procfile; \
+	elif [ -x .venv/bin/honcho ]; then \
+		echo "Using honcho (.venv)."; \
+		.venv/bin/honcho start -f Procfile; \
+	elif command -v honcho >/dev/null 2>&1; then \
+		echo "Using honcho."; \
+		honcho start -f Procfile; \
+	else \
+		echo ""; \
+		echo "No process manager found. Install one of:"; \
+		echo "  brew install overmind          # recommended (macOS)"; \
+		echo "  brew install hivemind"; \
+		echo "  $(PIP) install honcho          # pure-Python, no brew needed"; \
+		echo ""; \
+		echo "Or run each in its own terminal: make core / gateway / realtime / workers / web"; \
+		exit 1; \
 	fi
 
 # Wait for postgres + redis containers to report healthy before starting host procs.
@@ -167,28 +207,6 @@ wait-infra:
 		printf "."; sleep 1; \
 		if [ $$i -eq 30 ]; then echo " TIMEOUT"; exit 1; fi; \
 	done
-	@if command -v overmind >/dev/null 2>&1; then \
-		echo "Using overmind. Tip: 'overmind connect <proc>' in another terminal to attach."; \
-		overmind start -f Procfile; \
-	elif command -v hivemind >/dev/null 2>&1; then \
-		echo "Using hivemind."; \
-		hivemind Procfile; \
-	elif [ -x .venv/bin/honcho ]; then \
-		echo "Using honcho (.venv)."; \
-		.venv/bin/honcho start -f Procfile; \
-	elif command -v honcho >/dev/null 2>&1; then \
-		echo "Using honcho."; \
-		honcho start -f Procfile; \
-	else \
-		echo ""; \
-		echo "No process manager found. Install one of:"; \
-		echo "  brew install overmind          # recommended (macOS)"; \
-		echo "  brew install hivemind"; \
-		echo "  $(PIP) install honcho          # pure-Python, no brew needed"; \
-		echo ""; \
-		echo "Or run each in its own terminal: make core / gateway / workers / web"; \
-		exit 1; \
-	fi
 
 # ---------- tests ----------
 

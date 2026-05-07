@@ -16,6 +16,8 @@ from openinterview_schemas import (
     ProviderOverride,
     ProviderTestRequest,
     ProviderTestResponse,
+    RealtimeTranscriptionSessionRequest,
+    RealtimeTranscriptionSessionResponse,
     TokenUsage,
     TranscriptionRequest,
     TranscriptionResponse,
@@ -85,6 +87,61 @@ class GatewayService:
         self._tiers = tiers
         self._usage = usage
         self._tier_lookup = tier_lookup
+
+    async def create_realtime_transcription_session(
+        self, req: RealtimeTranscriptionSessionRequest
+    ) -> RealtimeTranscriptionSessionResponse:
+        if req.provider != "openai":
+            raise GatewayError("realtime transcription requires openai", status=400)
+        creds = await self._keys.resolve(user_id=req.user_id, provider=req.provider)
+        if creds is None:
+            raise GatewayError(
+                f"no credentials for provider {req.provider}", status=503
+            )
+        await self._enforce_rate_limit(user_id=req.user_id, mode=creds.mode)
+
+        start = time.monotonic()
+        status_code = 200
+        error: str | None = None
+        try:
+            result = await self._provider.create_realtime_transcription_session(
+                endpoint="https://api.openai.com/v1",
+                api_key=creds.api_key,
+                model_id=req.model,
+                language=req.language,
+                prompt=req.prompt,
+                noise_reduction=req.noise_reduction,
+                turn_detection=req.turn_detection,
+                vad_eagerness=req.vad_eagerness,
+                include_logprobs=req.include_logprobs,
+            )
+            return RealtimeTranscriptionSessionResponse(
+                ws_url=result.ws_url,
+                client_secret=result.client_secret,
+                expires_at=result.expires_at,
+                session_id=result.session_id,
+                model=result.model,
+                provider=req.provider,
+            )
+        except ProviderError as e:
+            status_code = e.status
+            error = str(e)
+            raise GatewayError(error, status=e.status) from e
+        finally:
+            latency_ms = int((time.monotonic() - start) * 1000)
+            await self._usage.record(
+                UsageEvent(
+                    user_id=req.user_id,
+                    mode=creds.mode,
+                    logical_model="realtime-transcription",
+                    provider=req.provider,
+                    endpoint="https://api.openai.com/v1",
+                    usage=TokenUsage(),
+                    latency_ms=latency_ms,
+                    status=status_code,
+                    error=error,
+                )
+            )
 
     def _resolve_entry(
         self,

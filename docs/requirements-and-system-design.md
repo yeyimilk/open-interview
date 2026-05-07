@@ -208,6 +208,18 @@ For each project, the system produces and stores:
                                               |  compatible)       |
                                               +--------------------+
 
+Live interviewer audio is isolated in a separate realtime gateway:
+
+```
+Web UI microphone
+  -> realtime_gateway WebSocket
+  -> GenAI Gateway realtime session minting
+  -> OpenAI Realtime transcription WebSocket
+  -> realtime_gateway turn aggregation + speaker gate
+  -> Core interviewer turn stream
+  -> Web UI live transcript + assistant tokens
+```
+
    Object/blob store: local filesystem under  /var/openinterview/blobs/<user_id>/...
 ```
 
@@ -217,6 +229,7 @@ For each project, the system produces and stores:
 - **Core API** — primary application, multi-tenant, user-facing endpoints.
 - **Workers** — background jobs (ingestion, QA generation, memory distillation). Multiple processes OK.
 - **GenAI Gateway** — independent service. Core/Workers only know it through an internal HTTP API; provider details are invisible to the rest of the system.
+- **Realtime Gateway** — WebSocket service for live interviewer audio. It owns browser PCM streaming, OpenAI Realtime transcription, turn aggregation, speaker verification, and the bridge back to Core. It never exposes raw provider keys to the browser.
 - **PostgreSQL** — single source of truth for relational data.
 - **Vector DB (Chroma)** — embeddings for code chunks, docs, QA, common KB, memory facts.
 - **Blob store** — uploaded zips, extracted source trees, generated diagrams.
@@ -323,6 +336,7 @@ Three layers, all per-user:
 - `POST /v1/embeddings` — OpenAI-shaped.
 - `POST /v1/audio/transcribe` — speech-to-text.
 - `POST /v1/audio/analyze` — multimodal voice-analysis (delivery scoring).
+- `POST /v1/realtime/transcription/session` — service-token-only endpoint that mints OpenAI Realtime transcription sessions with provider credentials resolved inside the gateway.
 - `GET  /v1/providers/{provider}/models` — live model discovery (`GET /v1/models` proxy, scoped to a user's key).
 - `POST /v1/providers/test` — tiny round-trip validation for a `(role, provider, endpoint, model_id)` tuple.
 - `POST /v1/admin/keys` — set/rotate admin keys (admin-only).
@@ -352,13 +366,47 @@ Three layers, all per-user:
 - `models.yaml` — logical name → provider/endpoint/model id mapping, plus role (chat/embedding/transcription/voice-analysis) and default. Server-wide fallback only; users can override per-role.
 - `tiers.yaml` — tier → rate limit mapping.
 
-### 3.8 Voice-ready interfaces (v1 stubs)
+### 3.8 Live interviewer audio
 
-- `MessageEnvelope { role, content_text, content_audio_ref? }` returned from chat endpoints.
-- Frontend chat components consume the envelope; audio rendering is a no-op in v1.
-- A future `STTProvider`/`TTSProvider` interface is reserved (`audio.py`) — v1 contains only the abstract types and a `NoopAdapter`.
+Live mode optimizes interview quality over provider neutrality in v1. The
+browser does not talk directly to OpenAI. It streams 24 kHz mono PCM16 chunks
+to `realtime_gateway`, which owns provider Realtime sockets and local gating.
 
-### 3.9 Blob storage abstraction
+**Frontend responsibilities**
+- Capture microphone audio as continuous PCM16 mono chunks.
+- Keep browser echo cancellation, noise suppression, and AGC enabled as best-effort capture constraints.
+- Use RMS only for the mic meter. Authoritative turn state comes from server frames.
+- Run a short calibration step before normal listening.
+
+**Realtime gateway responsibilities**
+- Enroll a session-local speaker profile with SpeechBrain ECAPA. Profiles are in memory only and are rebuilt after reconnect.
+- Mint an OpenAI Realtime transcription session through the GenAI Gateway. Raw provider keys never leave the GenAI Gateway.
+- Forward PCM to OpenAI Realtime with `near_field` noise reduction and `semantic_vad` using low eagerness.
+- Treat provider VAD events as hints. A raw `speech_stopped` does not commit a turn by itself.
+- Defer commit while speech is active or while OpenAI audio item ids are still awaiting transcription.
+- Merge transcript fragments across short pauses before calling Core.
+- Gate completed turns by non-empty transcript, minimum audio duration, speaker score, and transcript confidence when available.
+- Silently ignore rejected turns for chat history purposes, while sending private UI state frames and structured logs.
+
+**Accepted turn flow**
+1. Browser sends `hello`, `config`, calibration frames, and PCM binary frames over WebSocket.
+2. Realtime gateway emits `calibration_required`, then `calibration_ready`.
+3. OpenAI Realtime emits speech and transcript events.
+4. Realtime gateway aggregates fragments into one pending turn and emits `user_speech_stopped` only once it is ready to evaluate.
+5. If gates pass, realtime gateway sends `final_transcript` to the browser and streams the transcript to Core.
+6. Core streams normal interviewer tokens; realtime gateway forwards `assistant_token` and `assistant_done`.
+
+**Debugging**
+- `REALTIME_DEBUG_AUDIO_DIR` optionally writes local WAV/JSON files for calibration, transcript fragments, and merged turns. This must remain disabled in production and points to gitignored local storage in development.
+- Key logs include `live_speech_started`, `live_speech_stopped`, `live_audio_committed`, `live_transcript_fragment`, `live_turn_commit_deferred`, `live_turn_commit_scheduled`, `live_turn_commit_candidate`, `live_turn_accepted`, and `live_turn_rejected`.
+
+### 3.9 Voice message interfaces
+
+- Recorded voice and delivery scoring still use Core/Gateway audio endpoints (`/audio/transcribe`, `/audio/analyze`).
+- Live interviewer audio uses the realtime gateway path above.
+- `MessageEnvelope { role, content_text, content_audio_ref? }` remains the extensibility point for future assistant audio rendering.
+
+### 3.10 Blob storage abstraction
 
 All persistent file artifacts (uploaded projects, resumes, generated diagrams, QA shards, exports) go through a single `BlobStorage` interface. No part of the application reads or writes raw filesystem paths directly.
 
@@ -383,7 +431,7 @@ Tenant safety: every call site passes `user_id` and uses helpers like `paths.use
 
 Atomic writes: implementations expose `open_write` whose context manager finalizes via tmp+rename (local) or single-call PUT (cloud).
 
-### 3.10 Messenger plugins (extensible channel SDK)
+### 3.11 Messenger plugins (extensible channel SDK)
 
 > Status: WhatsApp implemented; WeChat / Telegram / Slack designed-in.
 
@@ -504,7 +552,7 @@ messenger_filters            -- (link_id, kind ∈ {phone,group}, value, label)
 `plugins/<id>/` containing `plugin.json` + `runtime.py` (and any
 sidecar). Zero changes in the kernel.
 
-### 3.11 Configuration & environment
+### 3.12 Configuration & environment
 
 The application reads config from env vars (twelve-factor) backed by a typed settings model (Pydantic `BaseSettings`). A single `Config` object is built once at startup and injected via DI; modules never read env vars directly.
 
@@ -530,6 +578,22 @@ CHROMA_URL=http://chroma:8000
 
 GATEWAY_URL=http://gateway:9000
 GATEWAY_SERVICE_TOKEN=...
+
+REALTIME_PUBLIC_URL=ws://localhost:9200/ws/interview
+OPENINTERVIEW_REALTIME_SECRET=...
+REALTIME_INTERNAL_TOKEN=...
+REALTIME_MAX_TURN_SECONDS=90
+REALTIME_TRANSCRIPTION_MODEL=gpt-4o-transcribe
+REALTIME_NOISE_REDUCTION=near_field
+REALTIME_TURN_DETECTION=semantic_vad
+REALTIME_SPEAKER_VERIFIER_BACKEND=speechbrain
+REALTIME_SPEAKER_THRESHOLD=0.25
+REALTIME_CALIBRATION_SECONDS=5.0
+REALTIME_MIN_TURN_AUDIO_MS=300
+REALTIME_MIN_TRANSCRIPT_CONFIDENCE=0.35
+REALTIME_VAD_EAGERNESS=low
+REALTIME_TURN_COMMIT_DELAY_MS=1200
+REALTIME_DEBUG_AUDIO_DIR=        # optional local dev WAV/JSON dumps only
 
 OPENINTERVIEW_MASTER_KEY=...                 # AES-GCM master key for at-rest secrets
 JWT_SECRET=...
@@ -588,7 +652,7 @@ tiers(name, rate_limit_rpm, ...)
 
 ### 4.3 Blob storage layout (logical, backend-agnostic)
 
-Blobs are addressed by **logical paths** that the application code never resolves to an OS path directly. A `BlobStorage` interface (see §3.9) is responsible for turning a logical path into an actual location on the configured backend (local FS / S3 / Azure Blob / GCS / etc.).
+Blobs are addressed by **logical paths** that the application code never resolves to an OS path directly. A `BlobStorage` interface (see §3.10) is responsible for turning a logical path into an actual location on the configured backend (local FS / S3 / Azure Blob / GCS / etc.).
 
 Logical paths:
 
@@ -600,7 +664,7 @@ users/<user_id>/resumes/<resume_id>/original.<ext>
 users/<user_id>/exports/<export_id>.zip
 ```
 
-Backend resolution is configured via env (see §3.10):
+Backend resolution is configured via env (see §3.12):
 - `local` → `${OPENINTERVIEW_DATA_DIR}/users/<user_id>/...`
 - `s3` → `s3://<bucket>/<prefix>/users/<user_id>/...`
 - `azure` → `https://<account>.blob.core.windows.net/<container>/<prefix>/users/<user_id>/...`
@@ -750,7 +814,7 @@ GET  /v1/usage
 
 ## 7. Repository / Directory Layout
 
-Top-level split is **frontend** vs **backend**. User data is **never** stored under the repo or the app code; it is referenced only by logical paths and resolved by the configured `BlobStorage` backend (see §3.9). For local development a separate data directory (outside the repo) is used and is configured via `OPENINTERVIEW_DATA_DIR`.
+Top-level split is **frontend** vs **backend**. User data is **never** stored under the repo or the app code; it is referenced only by logical paths and resolved by the configured `BlobStorage` backend (see §3.10). For local development a separate data directory (outside the repo) is used and is configured via `OPENINTERVIEW_DATA_DIR`.
 
 ```
 open-interview/

@@ -12,6 +12,7 @@ from openinterview_logging import configure_logging, get_logger
 
 from .api import health as health_api
 from .api import ws as ws_api
+from .audio import build_speaker_verifier
 from .clients.core_client import CoreClient
 from .clients.gateway_client import GatewayClient
 from .config import Settings, get_settings
@@ -29,6 +30,9 @@ async def _lifespan(app: FastAPI):
     app.state.core_client = CoreClient(
         base_url=s.core_url,
         service_token=s.realtime_internal_token,
+    )
+    app.state.speaker_verifier = build_speaker_verifier(
+        s.realtime_speaker_verifier_backend
     )
     log.info("realtime_startup", port=s.realtime_port)
     try:

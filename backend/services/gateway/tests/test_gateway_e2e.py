@@ -263,3 +263,55 @@ async def test_embeddings_path(yaml_tmp) -> None:
         body = r.json()
         assert len(body["vectors"]) == 2
         assert body["provider"] == "openai"
+
+
+@pytest.mark.asyncio
+async def test_realtime_transcription_session_uses_ephemeral_secret(yaml_tmp) -> None:
+    s = _settings(yaml_tmp, shared_openai="sk-admin-shared")
+    app = create_app(s)
+    fake = FakeProvider()
+    app.state.provider_override = fake
+
+    async with app.router.lifespan_context(app):
+        sm = app.state.sessionmaker
+        user_id = await _seed_user(sm, with_byo=False)
+
+        async with _client(app) as c:
+            r = await c.post(
+                "/v1/realtime/transcription/session",
+                headers=_auth_headers(),
+                json={
+                    "user_id": str(user_id),
+                    "model": "gpt-4o-transcribe",
+                    "language": "en",
+                    "noise_reduction": "near_field",
+                    "turn_detection": "semantic_vad",
+                    "vad_eagerness": "medium",
+                },
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["client_secret"] == "ek_test_ephemeral"
+        assert "sk-admin-shared" not in r.text
+        assert fake.realtime_session_calls[0]["api_key"] == "sk-admin-shared"
+        assert fake.realtime_session_calls[0]["model_id"] == "gpt-4o-transcribe"
+        assert fake.realtime_session_calls[0]["turn_detection"] == "semantic_vad"
+
+
+@pytest.mark.asyncio
+async def test_realtime_transcription_session_requires_credentials(yaml_tmp) -> None:
+    s = _settings(yaml_tmp, shared_openai=None)
+    app = create_app(s)
+    app.state.provider_override = FakeProvider()
+
+    async with app.router.lifespan_context(app):
+        sm = app.state.sessionmaker
+        user_id = await _seed_user(sm, with_byo=False)
+
+        async with _client(app) as c:
+            r = await c.post(
+                "/v1/realtime/transcription/session",
+                headers=_auth_headers(),
+                json={"user_id": str(user_id)},
+            )
+        assert r.status_code == 503

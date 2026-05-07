@@ -74,6 +74,34 @@ class TranscriptionResponse(BaseModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
+# ---------- realtime transcription --------------------------------------
+
+RealtimeNoiseReduction = Literal["near_field", "far_field"]
+RealtimeTurnDetection = Literal["server_vad", "semantic_vad"]
+RealtimeVadEagerness = Literal["low", "medium", "high", "auto"]
+
+
+class RealtimeTranscriptionSessionRequest(BaseModel):
+    user_id: UUID
+    provider: Literal["openai"] = "openai"
+    model: str = "gpt-4o-transcribe"
+    language: str | None = None
+    prompt: str = ""
+    noise_reduction: RealtimeNoiseReduction | None = "near_field"
+    turn_detection: RealtimeTurnDetection = "semantic_vad"
+    vad_eagerness: RealtimeVadEagerness = "low"
+    include_logprobs: bool = True
+
+
+class RealtimeTranscriptionSessionResponse(BaseModel):
+    ws_url: str
+    client_secret: str
+    expires_at: int | None = None
+    session_id: str | None = None
+    model: str
+    provider: Literal["openai"] = "openai"
+
+
 # ---------- voice / delivery analysis ----------------------------------
 
 class FillerCount(BaseModel):

@@ -4,6 +4,7 @@ Imported lazily so tests using the in-memory backend don't need chromadb install
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from .interface import VectorMatch, VectorRecord, VectorStore
@@ -76,7 +77,8 @@ class ChromaVectorStore(VectorStore):
 
 
 def vector_collection_for_user_project(user_id: str, project_id: str) -> str:
-    return f"user_{user_id}_project_{project_id}".replace("-", "")
+    digest = _collection_digest("project", user_id, project_id)
+    return f"user_project_{digest}"
 
 
 def vector_collection_for_user_qa(user_id: str) -> str:
@@ -90,3 +92,8 @@ def vector_collection_for_user_memory(user_id: str) -> str:
 def vector_collection_for_common_kb(space_key: str) -> str:
     safe = "".join(ch if ch.isalnum() else "_" for ch in space_key.lower()).strip("_")
     return f"common_kb_{safe or 'default'}"
+
+
+def _collection_digest(*parts: str) -> str:
+    raw = ":".join(str(part) for part in parts)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]

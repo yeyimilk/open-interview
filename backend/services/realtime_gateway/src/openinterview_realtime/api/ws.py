@@ -46,7 +46,18 @@ async def ws_interview(ws: WebSocket) -> None:
         claims=claims,
         gateway=gw,
         core=core,
+        speaker_verifier=ws.app.state.speaker_verifier,
         max_turn_seconds=settings.realtime_max_turn_seconds,
+        transcription_model=settings.realtime_transcription_model,
+        noise_reduction=settings.realtime_noise_reduction,
+        turn_detection=settings.realtime_turn_detection,
+        vad_eagerness=settings.realtime_vad_eagerness,
+        speaker_threshold=settings.realtime_speaker_threshold,
+        calibration_seconds=settings.realtime_calibration_seconds,
+        min_turn_audio_ms=settings.realtime_min_turn_audio_ms,
+        min_transcript_confidence=settings.realtime_min_transcript_confidence,
+        turn_commit_delay_ms=settings.realtime_turn_commit_delay_ms,
+        debug_audio_dir=settings.realtime_debug_audio_dir,
     )
     try:
         await session.run()

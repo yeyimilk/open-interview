@@ -17,11 +17,21 @@ class Settings(BaseSettings):
     gateway_url: str = "http://localhost:9100"
     gateway_service_token: str = "dev-service-token-change-me"
 
-    openinterview_realtime_secret: str = "dev-realtime-secret-change-me"
+    openinterview_realtime_secret: str = "dev-realtime-secret-change-me-32bytes"
     realtime_internal_token: str = "dev-internal-token-change-me"
 
     realtime_max_turn_seconds: int = 90
-    realtime_vad_silence_ms: int = 700
+    realtime_transcription_model: str = "gpt-4o-transcribe"
+    realtime_noise_reduction: str | None = "near_field"
+    realtime_turn_detection: str = "semantic_vad"
+    realtime_vad_eagerness: str = "low"
+    realtime_speaker_verifier_backend: str = "speechbrain"
+    realtime_speaker_threshold: float = 0.25
+    realtime_calibration_seconds: float = 5.0
+    realtime_min_turn_audio_ms: int = 300
+    realtime_min_transcript_confidence: float = 0.35
+    realtime_turn_commit_delay_ms: int = 1200
+    realtime_debug_audio_dir: str = ""
 
     log_level: str = "INFO"
     log_json: bool = False

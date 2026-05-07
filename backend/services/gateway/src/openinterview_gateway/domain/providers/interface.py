@@ -39,6 +39,15 @@ class TranscriptionResult:
 
 
 @dataclass(frozen=True)
+class RealtimeTranscriptionSessionResult:
+    model: str
+    client_secret: str
+    expires_at: int | None
+    session_id: str | None
+    ws_url: str
+
+
+@dataclass(frozen=True)
 class ProviderModelInfo:
     """One row of a provider's model catalogue (``GET /v1/models``)."""
 
@@ -105,6 +114,20 @@ class LLMProvider(Protocol):
         filename: str = "audio.webm",
         language: str | None = None,
     ) -> TranscriptionResult: ...
+
+    async def create_realtime_transcription_session(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        model_id: str,
+        language: str | None = None,
+        prompt: str = "",
+        noise_reduction: str | None = "near_field",
+        turn_detection: str = "semantic_vad",
+        vad_eagerness: str = "low",
+        include_logprobs: bool = True,
+    ) -> RealtimeTranscriptionSessionResult: ...
 
     async def analyze_voice(
         self,

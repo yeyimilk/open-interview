@@ -7,6 +7,7 @@ from openinterview_gateway.domain.providers.interface import (
     EmbeddingResult,
     LLMProvider,
     ProviderResult,
+    RealtimeTranscriptionSessionResult,
     TranscriptionResult,
 )
 
@@ -16,6 +17,7 @@ class FakeProvider(LLMProvider):
         self.chat_calls: list[dict] = []
         self.embed_calls: list[dict] = []
         self.transcribe_calls: list[dict] = []
+        self.realtime_session_calls: list[dict] = []
 
     async def chat(  # type: ignore[override]
         self,
@@ -81,4 +83,38 @@ class FakeProvider(LLMProvider):
             model=model_id,
             text=f"transcribed:{len(audio)}",
             usage=TokenUsage(),
+        )
+
+    async def create_realtime_transcription_session(  # type: ignore[override]
+        self,
+        *,
+        endpoint,
+        api_key,
+        model_id,
+        language=None,
+        prompt="",
+        noise_reduction="near_field",
+        turn_detection="semantic_vad",
+        vad_eagerness="medium",
+        include_logprobs=True,
+    ):
+        self.realtime_session_calls.append(
+            {
+                "endpoint": endpoint,
+                "api_key": api_key,
+                "model_id": model_id,
+                "language": language,
+                "prompt": prompt,
+                "noise_reduction": noise_reduction,
+                "turn_detection": turn_detection,
+                "vad_eagerness": vad_eagerness,
+                "include_logprobs": include_logprobs,
+            }
+        )
+        return RealtimeTranscriptionSessionResult(
+            model=model_id,
+            client_secret="ek_test_ephemeral",
+            expires_at=1234567890,
+            session_id="sess_test",
+            ws_url="wss://api.openai.com/v1/realtime?intent=transcription",
         )

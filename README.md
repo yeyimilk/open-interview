@@ -51,11 +51,11 @@ Open Interview turns your codebase into the curriculum:
 ```bash
 git clone https://github.com/your-org/open-interview.git
 cd open-interview
-make setup                          # venv, editable installs, npm install
+make setup                          # venv, editable installs, speaker deps, npm install
 cp config/env.dev.example .env
 
 make infra        # postgres + redis + chroma in Docker (background)
-make all          # core + gateway + workers + web  (overmind / honcho)
+make all          # core + gateway + realtime + workers + web  (overmind / honcho)
 ```
 
 | Surface       | URL                                          |
@@ -67,11 +67,15 @@ make all          # core + gateway + workers + web  (overmind / honcho)
 > **Heads up:** `make all` requires a process manager
 > (`brew install overmind` recommended, or `pip install honcho`).
 > Don't have one? Run each service in its own terminal —
-> `make core`, `make gateway`, `make workers`, `make web`.
+> `make core`, `make gateway`, `make realtime`, `make workers`, `make web`.
 
 Add your provider key in **Settings → API keys** once the UI is up. From
 there, upload a project zip + resume, then start a Mentor or Interviewer
 session.
+
+Live voice mode uses local speaker verification. If an existing `.venv`
+predates this feature, run `make setup-speaker` once before starting
+`make realtime` or `make all`.
 
 ---
 
@@ -131,12 +135,13 @@ one-click Test button. BYO mode = no rate limits.
 <td width="50%" valign="top">
 
 ### 🎙️ Voice input & delivery scoring
-Hold-to-record with live volume meter. Browser-native
-`MediaRecorder` (webm/opus on Chromium, mp4 on Safari) →
-multipart upload → Whisper / `gpt-4o-mini-transcribe`. In
-Interviewer voice mode a multimodal pass also returns delivery
-metrics (pace, fillers, clarity) shown per-message and rolled
-into the end-of-session evaluation.
+Recorded voice answers use browser-native `MediaRecorder` →
+multipart upload → Whisper / `gpt-4o-mini-transcribe`. Live
+interviewer mode uses continuous 24 kHz PCM streaming through the
+OpenInterview realtime gateway, OpenAI Realtime transcription,
+server-side turn aggregation, and session-local speaker verification.
+Accepted live turns keep the same interviewer agent and persistence
+flow as text turns.
 
 </td>
 </tr>
@@ -222,14 +227,41 @@ mediated delivery with chunking + dedup.
 │ • chat/stream
 │ • embed
 │ • transcribe
-│ • rate-limit
-│ • usage logs
+│ • realtime session minting
+│ • rate-limit + usage logs
 └──────┬──────┘
        │ OpenAI-compatible
        ▼
 ┌─────────────────────────────────────────────────────────┐
 │ OpenAI · Anthropic (adapter) · Ollama · vLLM · OpenRouter │
 └─────────────────────────────────────────────────────────┘
+
+Live interviewer audio runs through a separate realtime gateway:
+
+```mermaid
+sequenceDiagram
+    participant Browser as React live chat
+    participant RT as realtime_gateway
+    participant GW as GenAI gateway
+    participant OA as OpenAI Realtime
+    participant Core as Core interviewer
+
+    Browser->>RT: WS hello + config + PCM16 chunks
+    RT->>Browser: calibration_required
+    Browser->>RT: calibration_start / PCM16 / calibration_commit
+    RT->>RT: enroll session-local speaker profile
+    RT->>GW: mint realtime transcription session
+    GW->>OA: POST /realtime/transcription_sessions
+    OA-->>GW: ephemeral client_secret
+    GW-->>RT: ws_url + client_secret
+    RT->>OA: provider WS, append PCM16
+    OA-->>RT: speech_started / speech_stopped / transcript completed
+    RT->>RT: defer commit while speech or transcript items are outstanding
+    RT->>RT: speaker + confidence gates
+    RT->>Core: accepted primary-speaker transcript
+    Core-->>RT: interviewer SSE tokens
+    RT-->>Browser: final_transcript + assistant_token + assistant_done
+```
 ```
 
 ### Repository layout
@@ -241,6 +273,7 @@ open-interview/
 │   ├── services/
 │   │   ├── core/              # FastAPI app (api / domain / infra)
 │   │   ├── gateway/           # GenAI gateway (provider router + rate limiter)
+│   │   ├── realtime_gateway/  # live audio WS, Realtime STT, speaker gate
 │   │   ├── workers/           # arq background jobs
 │   │   └── whatsapp_bridge/   # Node sidecar (Fastify + Baileys), port 9300
 │   └── libs/                  # shared schemas, db models, storage, logging
@@ -257,6 +290,7 @@ open-interview/
 | ----- | ----- |
 | Frontend | React 18, Vite, TypeScript, Tailwind, shadcn/ui, lucide-react, react-markdown, react-router |
 | Core API | FastAPI, SQLAlchemy 2 (async), pydantic v2, LangGraph, httpx, argon2, PyJWT |
+| Realtime gateway | FastAPI WebSockets, OpenAI Realtime transcription, SpeechBrain ECAPA speaker verification |
 | Persistence | Postgres (prod) / SQLite (tests), Redis, Chroma vector DB |
 | Workers | arq (Redis-backed task queue) |
 | Messenger bridge | Node 20, TypeScript, Fastify, Baileys (`@whiskeysockets/baileys`), vitest |
@@ -286,6 +320,24 @@ OPENINTERVIEW_MASTER_KEY=change-me-32-bytes-min
 # Internal gateway
 GATEWAY_URL=http://localhost:9100
 GATEWAY_SERVICE_TOKEN=change-me-internal-only
+
+# Live interviewer audio
+REALTIME_PUBLIC_URL=ws://localhost:9200/ws/interview
+OPENINTERVIEW_REALTIME_SECRET=change-me-32-bytes-min
+REALTIME_INTERNAL_TOKEN=change-me-internal-only
+REALTIME_MAX_TURN_SECONDS=90
+REALTIME_TRANSCRIPTION_MODEL=gpt-4o-transcribe
+REALTIME_NOISE_REDUCTION=near_field
+REALTIME_TURN_DETECTION=semantic_vad
+REALTIME_SPEAKER_VERIFIER_BACKEND=speechbrain
+REALTIME_SPEAKER_THRESHOLD=0.25
+REALTIME_CALIBRATION_SECONDS=5.0
+REALTIME_MIN_TURN_AUDIO_MS=300
+REALTIME_MIN_TRANSCRIPT_CONFIDENCE=0.35
+REALTIME_VAD_EAGERNESS=low
+REALTIME_TURN_COMMIT_DELAY_MS=1200
+# Optional local-only WAV/JSON dumps for live-audio debugging.
+REALTIME_DEBUG_AUDIO_DIR=
 ```
 
 ### Model routing (`config/models.yaml`)
@@ -354,13 +406,9 @@ make test                 # full backend suite (~5s)
 cd frontend/app && npx tsc --noEmit && npx vite build
 ```
 
-Current coverage:
-
-- Core: 28 tests across security, ingestion (project + resume), QA pipeline,
-  mentor streaming, mentor tool-loop, interviewer flow, audio transcription.
-- Gateway: 6 tests for catalog routing, BYO vs shared mode, rate limiting,
-  usage logging.
-- Frontend: typecheck-clean Vite build with code-split markdown vendor chunk.
+Current coverage includes focused suites for core agent flows, gateway model
+routing and realtime session minting, realtime live-session turn aggregation
+and speaker gating, and a typecheck-clean Vite build.
 
 ---
 

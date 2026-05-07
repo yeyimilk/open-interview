@@ -43,9 +43,8 @@ export class Speaker {
   }
 
   /** True when the browser is currently playing or has queued an utterance.
-   *  We use this to hard-gate VAD so the mic doesn't pick up the agent's
-   *  own voice and treat it as user speech (the classic "AI talks to
-   *  itself" loop). */
+   *  We use this to hard-gate microphone streaming so the agent's own voice
+   *  doesn't become input audio. */
   isPlaying(): boolean {
     if (!this.supported) return false;
     try {

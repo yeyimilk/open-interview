@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY backend/libs /app/backend/libs
+COPY backend/services/realtime_gateway /app/backend/services/realtime_gateway
+
+RUN pip install --no-cache-dir \
+    /app/backend/libs/openinterview_logging \
+ && pip install --no-cache-dir '/app/backend/services/realtime_gateway[speaker]'
+
+EXPOSE 9200
+CMD ["python", "-m", "openinterview_realtime"]

@@ -18,6 +18,7 @@ from ...domain.providers.interface import (
     ProviderError,
     ProviderModelInfo,
     ProviderResult,
+    RealtimeTranscriptionSessionResult,
     TranscriptionResult,
     VoiceAnalysisResult,
 )
@@ -197,6 +198,53 @@ class OpenAICompatibleProvider(LLMProvider):
             usage=TokenUsage(),
         )
 
+    async def create_realtime_transcription_session(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        model_id: str,
+        language: str | None = None,
+        prompt: str = "",
+        noise_reduction: str | None = "near_field",
+        turn_detection: str = "semantic_vad",
+        vad_eagerness: str = "low",
+        include_logprobs: bool = True,
+    ) -> RealtimeTranscriptionSessionResult:
+        body: dict = {
+            "input_audio_format": "pcm16",
+            "input_audio_transcription": {
+                "model": model_id,
+                "prompt": prompt or "",
+            },
+            "turn_detection": _realtime_turn_detection(
+                turn_detection=turn_detection,
+                vad_eagerness=vad_eagerness,
+            ),
+        }
+        if language:
+            body["input_audio_transcription"]["language"] = language
+        body["input_audio_noise_reduction"] = (
+            None if noise_reduction is None else {"type": noise_reduction}
+        )
+        if include_logprobs:
+            body["include"] = ["item.input_audio_transcription.logprobs"]
+
+        data = await self._post(
+            endpoint, "/realtime/transcription_sessions", api_key, body
+        )
+        secret = data.get("client_secret") or {}
+        value = secret.get("value")
+        if not isinstance(value, str) or not value:
+            raise ProviderError("malformed realtime transcription session response")
+        return RealtimeTranscriptionSessionResult(
+            model=model_id,
+            client_secret=value,
+            expires_at=secret.get("expires_at"),
+            session_id=data.get("id"),
+            ws_url="wss://api.openai.com/v1/realtime?intent=transcription",
+        )
+
     async def analyze_voice(
         self,
         *,
@@ -346,6 +394,20 @@ def _safe_json(text: str, *, default):
         return json.loads(cleaned)
     except Exception:
         return default
+
+
+def _realtime_turn_detection(*, turn_detection: str, vad_eagerness: str) -> dict:
+    if turn_detection == "semantic_vad":
+        return {
+            "type": "semantic_vad",
+            "eagerness": vad_eagerness or "low",
+        }
+    return {
+        "type": "server_vad",
+        "threshold": 0.5,
+        "prefix_padding_ms": 300,
+        "silence_duration_ms": 500,
+    }
 
 
 _REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5")

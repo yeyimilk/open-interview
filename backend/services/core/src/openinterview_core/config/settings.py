@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     # Realtime (live-audio) gateway
     realtime_public_url: str = "ws://localhost:9200/ws/interview"
-    openinterview_realtime_secret: str = "dev-realtime-secret-change-me"
+    openinterview_realtime_secret: str = "dev-realtime-secret-change-me-32bytes"
     realtime_internal_token: str = "dev-internal-token-change-me"
     realtime_ticket_ttl_s: int = 60
 

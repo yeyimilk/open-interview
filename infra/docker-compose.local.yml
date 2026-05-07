@@ -66,6 +66,23 @@ services:
       gateway:
         condition: service_started
 
+  realtime:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.realtime
+    env_file:
+      - ../.env
+    environment:
+      CORE_URL: http://core:8000
+      GATEWAY_URL: http://gateway:9000
+      REALTIME_PORT: 9200
+    ports: ["9200:9200"]
+    depends_on:
+      gateway:
+        condition: service_started
+      core:
+        condition: service_started
+
   workers:
     build:
       context: ..

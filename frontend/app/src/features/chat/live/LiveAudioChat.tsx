@@ -114,6 +114,7 @@ export function LiveAudioChat({
       <LiveBar
         status={live.status}
         error={live.error}
+        ignoredReason={live.ignoredReason}
         level={live.micLevel}
         muted={live.muted}
         micPaused={live.micPaused}
@@ -133,16 +134,19 @@ function EmptyState() {
         </div>
         <h3 className="text-sm font-medium">Live voice mode</h3>
         <p className="text-xs text-muted-foreground">
-          Just start talking. We listen continuously, transcribe each turn,
-          and stream the interviewer's reply. Speak again any time to
-          interrupt — we keep listening as long as this tab is open.
+          First we calibrate to your voice. Then we listen continuously,
+          ignore rejected background audio, and stream the interviewer's reply.
         </p>
       </div>
     </div>
   );
 }
 
-function statusCopy(status: LiveStatus, micPaused: boolean): {
+function statusCopy(
+  status: LiveStatus,
+  micPaused: boolean,
+  ignoredReason: string | null
+): {
   label: string;
   hint: string;
 } {
@@ -152,13 +156,31 @@ function statusCopy(status: LiveStatus, micPaused: boolean): {
       return { label: "Idle", hint: "" };
     case "connecting":
       return { label: "Connecting...", hint: "Setting up live audio." };
+    case "calibrating":
+      return {
+        label: "Calibrating voice...",
+        hint: "Say a short sentence in your normal interview voice.",
+      };
     case "ready":
       return {
         label: "Listening",
-        hint: "Just start talking — we'll detect when you're done.",
+        hint: "Just start talking — background audio is ignored.",
       };
     case "user_speaking":
-      return { label: "You're speaking...", hint: "Pause when you're done." };
+      return {
+        label: "Voice detected",
+        hint: "Pause when you are done.",
+      };
+    case "processing_audio":
+      return {
+        label: "Checking audio...",
+        hint: "Confirming speaker and transcript.",
+      };
+    case "ignored_audio":
+      return {
+        label: "Audio ignored",
+        hint: ignoredHint(ignoredReason),
+      };
     case "thinking":
       return {
         label: "Transcribing & thinking...",
@@ -167,7 +189,7 @@ function statusCopy(status: LiveStatus, micPaused: boolean): {
     case "speaking":
       return {
         label: "Interviewer is speaking...",
-        hint: "Speak any time to interrupt.",
+        hint: "Tap the speaker button to mute playback.",
       };
     case "error":
       return { label: "Error", hint: "Reload to retry." };
@@ -179,6 +201,7 @@ function statusCopy(status: LiveStatus, micPaused: boolean): {
 function LiveBar({
   status,
   error,
+  ignoredReason,
   level,
   muted,
   micPaused,
@@ -187,36 +210,29 @@ function LiveBar({
 }: {
   status: LiveStatus;
   error: string | null;
+  ignoredReason: string | null;
   level: number;
   muted: boolean;
   micPaused: boolean;
   onToggleMute: () => void;
   onToggleMic: () => void;
 }) {
-  const { label, hint } = statusCopy(status, micPaused);
-  const dot = micPaused
-    ? "bg-muted-foreground/40"
-    : status === "user_speaking"
-      ? "bg-destructive animate-pulse"
-      : status === "speaking"
-        ? "bg-amber-500 animate-pulse"
-        : status === "thinking"
-          ? "bg-amber-500 animate-pulse"
-          : status === "ready"
-            ? "bg-emerald-500"
-            : status === "connecting"
-              ? "bg-sky-500 animate-pulse"
-              : status === "error"
-                ? "bg-red-600"
-                : "bg-muted-foreground/40";
+  const { label, hint } = statusCopy(status, micPaused, ignoredReason);
+  const dot = statusDot(status, micPaused);
 
-  const isUserSpeaking = status === "user_speaking" && !micPaused;
+  const showMeter =
+    !micPaused &&
+    (status === "ready" ||
+      status === "calibrating" ||
+      status === "user_speaking");
+
+  const barTone = statusBarTone(status);
 
   return (
     <div
       className={cn(
         "mt-3 rounded-xl border px-4 py-3 flex items-center gap-3",
-        isUserSpeaking ? "border-destructive/40 bg-destructive/5" : "bg-card"
+        barTone
       )}
     >
       <span className="relative grid place-items-center h-9 w-9 shrink-0">
@@ -224,13 +240,16 @@ function LiveBar({
       </span>
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium">{label}</div>
-        {!micPaused &&
-        (status === "ready" || status === "user_speaking") ? (
+        {showMeter ? (
           <div className="mt-1 h-1.5 w-full rounded bg-muted-foreground/15 overflow-hidden">
             <div
               className={cn(
                 "h-full transition-[width] duration-100",
-                isUserSpeaking ? "bg-destructive" : "bg-emerald-500/60"
+                status === "calibrating"
+                  ? "bg-sky-500/70"
+                  : status === "user_speaking"
+                    ? "bg-red-500/70"
+                    : "bg-emerald-500/60"
               )}
               style={{ width: `${Math.min(100, level * 100)}%` }}
             />
@@ -273,4 +292,61 @@ function LiveBar({
       </button>
     </div>
   );
+}
+
+function statusDot(status: LiveStatus, micPaused: boolean): string {
+  if (micPaused) return "bg-muted-foreground/40";
+  switch (status) {
+    case "calibrating":
+    case "connecting":
+      return "bg-sky-500 animate-pulse";
+    case "user_speaking":
+      return "bg-red-500 animate-pulse";
+    case "processing_audio":
+    case "thinking":
+    case "speaking":
+      return "bg-amber-500 animate-pulse";
+    case "ignored_audio":
+      return "bg-zinc-500";
+    case "ready":
+      return "bg-emerald-500";
+    case "error":
+      return "bg-red-600";
+    default:
+      return "bg-muted-foreground/40";
+  }
+}
+
+function statusBarTone(status: LiveStatus): string {
+  switch (status) {
+    case "calibrating":
+      return "border-sky-500/30 bg-sky-500/5";
+    case "user_speaking":
+      return "border-red-500/30 bg-red-500/5";
+    case "ignored_audio":
+      return "border-zinc-500/30 bg-zinc-500/5";
+    case "processing_audio":
+    case "thinking":
+      return "border-amber-500/30 bg-amber-500/5";
+    default:
+      return "bg-card";
+  }
+}
+
+function ignoredHint(reason: string | null): string {
+  switch (reason) {
+    case "speaker_mismatch":
+      return "Speaker did not match calibration.";
+    case "too_short":
+      return "Speech was too short to verify.";
+    case "empty_transcript":
+    case "transcription_failed":
+      return "No usable transcript was detected.";
+    case "low_transcript_confidence":
+      return "Transcript confidence was too low.";
+    case "speaker_verifier_error":
+      return "Speaker verification failed closed.";
+    default:
+      return "Rejected before sending to the interviewer.";
+  }
 }

@@ -14,6 +14,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+speaker = [
+  "numpy>=1.26",
+  "speechbrain>=1.0.0",
+  "torch>=2.2",
+  "torchaudio>=2.2",
+]
 test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [build-system]
