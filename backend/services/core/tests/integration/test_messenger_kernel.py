@@ -393,13 +393,18 @@ async def test_status_reports_active_session(env):
 # ---- new dispatch policy --------------------------------------------------
 
 
-def _group_turn(text: str, *, msg_id: str | None = None) -> InboundTurn:
+def _group_turn(
+    text: str,
+    *,
+    msg_id: str | None = None,
+    chat_id: str = "100-200@g.us",
+) -> InboundTurn:
     return InboundTurn(
         channel="fakeapp",
         external_user_id="+15555550000",
         text=text,
         message_id=msg_id,
-        chat_id="100-200@g.us",
+        chat_id=chat_id,
         is_group=True,
         link_external_id="+15551234567",
     )
@@ -430,6 +435,29 @@ async def test_plain_group_message_without_session_is_silent(env):
     # without an active session must never produce output.
     await env["kernel"].handle_turn(env["plugin"], _group_turn("random chatter", msg_id="g1"))
     assert env["plugin"].sent == []
+
+
+@pytest.mark.asyncio
+async def test_group_active_session_is_scoped_to_origin_group(env):
+    await _link(env)
+    await env["kernel"].handle_turn(
+        env["plugin"], _group_turn("/mentor", msg_id="g-start", chat_id="100-200@g.us")
+    )
+    assert any("Mentor mode" in s[1] for s in env["plugin"].sent)
+
+    env["plugin"].sent.clear()
+    await env["kernel"].handle_turn(
+        env["plugin"],
+        _group_turn(
+            "answer from other group", msg_id="g-other", chat_id="300-400@g.us"
+        ),
+    )
+
+    assert env["plugin"].sent == []
+    assert not any(
+        c[0] == "send_mentor" and c[1]["content"] == "answer from other group"
+        for c in env["facade"].calls
+    )
 
 
 @pytest.mark.asyncio

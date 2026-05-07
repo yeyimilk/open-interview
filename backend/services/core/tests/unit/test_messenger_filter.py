@@ -70,6 +70,16 @@ def test_allowlist_group_match():
     ) is True
 
 
+def test_allowlist_phone_rule_does_not_allow_group_sender():
+    f = _flt("allowlist", rules=(("phone", "15559998888"),))
+    assert apply_filter(
+        flt=f,
+        sender_jid="15559998888@s.whatsapp.net",
+        chat_jid="100-200@g.us",
+        is_group=True,
+    ) is False
+
+
 def test_allowlist_no_match_drops():
     f = _flt("allowlist", rules=(("phone", "15559998888"),))
     assert apply_filter(

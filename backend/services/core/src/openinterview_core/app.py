@@ -60,6 +60,18 @@ async def _dev_patch_columns(conn) -> None:
             return any(row[1] == column for row in r.fetchall())
         return True  # unknown dialect — let it fail loudly downstream
 
+    async def _has_constraint(table: str, constraint: str) -> bool:
+        if dialect == "postgresql":
+            r = await conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.table_constraints "
+                    "WHERE table_name = :t AND constraint_name = :c"
+                ),
+                {"t": table, "c": constraint},
+            )
+            return r.first() is not None
+        return True
+
     if not await _has_column("messenger_links", "filter_mode"):
         await conn.execute(
             text(
@@ -68,6 +80,31 @@ async def _dev_patch_columns(conn) -> None:
                 "NOT NULL DEFAULT 'dms_only'"
             )
         )
+    if not await _has_column("messenger_active_sessions", "conversation_id"):
+        await conn.execute(
+            text(
+                "ALTER TABLE messenger_active_sessions "
+                "ADD COLUMN conversation_id VARCHAR(256) NULL"
+            )
+        )
+    if dialect == "postgresql":
+        old_constraint = "uq_messenger_active_user_channel"
+        new_constraint = "uq_messenger_active_user_channel_conversation"
+        if await _has_constraint("messenger_active_sessions", old_constraint):
+            await conn.execute(
+                text(
+                    "ALTER TABLE messenger_active_sessions "
+                    f"DROP CONSTRAINT {old_constraint}"
+                )
+            )
+        if not await _has_constraint("messenger_active_sessions", new_constraint):
+            await conn.execute(
+                text(
+                    "ALTER TABLE messenger_active_sessions "
+                    f"ADD CONSTRAINT {new_constraint} "
+                    "UNIQUE (user_id, channel, conversation_id)"
+                )
+            )
 
     # qa_sets: resume scoping. Older DBs have a NOT NULL project_id and no
     # resume_id / scope columns. We add the new columns and relax the NOT NULL

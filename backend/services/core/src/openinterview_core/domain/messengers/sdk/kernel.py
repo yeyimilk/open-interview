@@ -33,6 +33,11 @@ def _reply_to(turn: InboundTurn) -> str:
     """
     return turn.chat_id or turn.external_user_id
 
+
+def _conversation_id(turn: InboundTurn) -> str:
+    return turn.chat_id or turn.external_user_id
+
+
 log = get_logger(__name__)
 
 
@@ -210,7 +215,11 @@ class MessengerKernel:
             return
 
         # --- plain message routing ---------------------------------------
-        active = await self._active.get(user_id=user_id, channel=turn.channel)
+        active = await self._active.get(
+            user_id=user_id,
+            channel=turn.channel,
+            conversation_id=_conversation_id(turn),
+        )
         if active is not None:
             # Already in a mode — route to its agent.
             await self._dispatch_message(plugin, turn, user_id, active)
@@ -270,7 +279,11 @@ class MessengerKernel:
     async def _cmd_status(
         self, plugin: MessengerPlugin, turn: InboundTurn, user_id: UUID
     ) -> None:
-        active = await self._active.get(user_id=user_id, channel=turn.channel)
+        active = await self._active.get(
+            user_id=user_id,
+            channel=turn.channel,
+            conversation_id=_conversation_id(turn),
+        )
         if active is None:
             text = (
                 "No mode active. Send any message to start chatting, or:\n"
@@ -305,7 +318,11 @@ class MessengerKernel:
             user_id=user_id, project_id=project_id
         )
         await self._active.set(
-            user_id=user_id, channel=turn.channel, chat_session_id=sid, mode="mentor"
+            user_id=user_id,
+            channel=turn.channel,
+            conversation_id=_conversation_id(turn),
+            chat_session_id=sid,
+            mode="mentor",
         )
         await self._deliver(
             plugin, to=_reply_to(turn), text=opening or "Mentor mode. Ask away."
@@ -355,6 +372,7 @@ class MessengerKernel:
             await self._active.set(
                 user_id=user_id,
                 channel=turn.channel,
+                conversation_id=_conversation_id(turn),
                 chat_session_id=sid,
                 mode="interviewer",
             )
@@ -392,6 +410,7 @@ class MessengerKernel:
         await self._active.set(
             user_id=user_id,
             channel=turn.channel,
+            conversation_id=_conversation_id(turn),
             chat_session_id=sid,
             mode="interviewer",
         )
@@ -404,7 +423,11 @@ class MessengerKernel:
     async def _cmd_end(
         self, plugin: MessengerPlugin, turn: InboundTurn, user_id: UUID
     ) -> None:
-        active = await self._active.get(user_id=user_id, channel=turn.channel)
+        active = await self._active.get(
+            user_id=user_id,
+            channel=turn.channel,
+            conversation_id=_conversation_id(turn),
+        )
         if active is None:
             await self._deliver(
                 plugin,
@@ -414,7 +437,11 @@ class MessengerKernel:
             return
         # General/chat modes don't need a fancy summary — just clear them.
         if active.mode in ("chat", "general"):
-            await self._active.clear(user_id=user_id, channel=turn.channel)
+            await self._active.clear(
+                user_id=user_id,
+                channel=turn.channel,
+                conversation_id=_conversation_id(turn),
+            )
             await self._deliver(
                 plugin,
                 to=_reply_to(turn),
@@ -427,7 +454,11 @@ class MessengerKernel:
         summary = await self._agent.end_session(
             user_id=user_id, session_id=active.chat_session_id, mode=active.mode
         )
-        await self._active.clear(user_id=user_id, channel=turn.channel)
+        await self._active.clear(
+            user_id=user_id,
+            channel=turn.channel,
+            conversation_id=_conversation_id(turn),
+        )
         await self._deliver(plugin, to=_reply_to(turn), text=summary)
 
     async def _dispatch_message(
@@ -462,6 +493,7 @@ class MessengerKernel:
         await self._active.set(
             user_id=user_id,
             channel=turn.channel,
+            conversation_id=_conversation_id(turn),
             chat_session_id=sid,
             mode="general",
         )
@@ -484,6 +516,7 @@ class MessengerKernel:
         await self._active.set(
             user_id=user_id,
             channel=turn.channel,
+            conversation_id=_conversation_id(turn),
             chat_session_id=sid,
             mode="general",
         )
@@ -599,6 +632,7 @@ class MessengerKernel:
         await self._active.set(
             user_id=user_id,
             channel=turn.channel,
+            conversation_id=_conversation_id(turn),
             chat_session_id=sid,
             mode=mode,
         )

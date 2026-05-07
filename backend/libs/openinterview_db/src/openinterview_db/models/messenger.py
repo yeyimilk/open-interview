@@ -92,13 +92,18 @@ class MessengerPairToken(UUIDPKMixin, TimestampMixin, Base):
 
 
 class MessengerActiveSession(UUIDPKMixin, TimestampMixin, Base):
-    """The active mentor/interviewer session for a (user, channel) pair, so
-    the kernel knows where to route plain messages.
+    """The active mentor/interviewer session for a (user, channel, conversation)
+    pair, so the kernel knows where to route plain messages.
     """
 
     __tablename__ = "messenger_active_sessions"
     __table_args__ = (
-        UniqueConstraint("user_id", "channel", name="uq_messenger_active_user_channel"),
+        UniqueConstraint(
+            "user_id",
+            "channel",
+            "conversation_id",
+            name="uq_messenger_active_user_channel_conversation",
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -108,6 +113,9 @@ class MessengerActiveSession(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
     channel: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(256), nullable=True, index=True
+    )
     chat_session_id: Mapped[uuid.UUID] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("chat_sessions.id", ondelete="CASCADE"),

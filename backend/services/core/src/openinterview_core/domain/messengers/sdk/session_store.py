@@ -1,5 +1,5 @@
-"""Channel-agnostic mapping of (channel, external_id) → user, and per-user
-per-channel active mentor/interviewer chat session.
+"""Channel-agnostic mapping of (channel, external_id) -> user, and per-user
+per-conversation active mentor/interviewer chat session.
 """
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ class ActiveSessionStore:
         self._sm = sessionmaker
 
     async def get(
-        self, *, user_id: UUID, channel: str
+        self, *, user_id: UUID, channel: str, conversation_id: str | None
     ) -> MessengerActiveSession | None:
         async with self._sm() as s:
             return (
@@ -142,6 +142,7 @@ class ActiveSessionStore:
                     select(MessengerActiveSession).where(
                         MessengerActiveSession.user_id == user_id,
                         MessengerActiveSession.channel == channel,
+                        MessengerActiveSession.conversation_id == conversation_id,
                     )
                 )
             ).scalar_one_or_none()
@@ -151,6 +152,7 @@ class ActiveSessionStore:
         *,
         user_id: UUID,
         channel: str,
+        conversation_id: str | None,
         chat_session_id: UUID,
         mode: str,
     ) -> None:
@@ -160,10 +162,12 @@ class ActiveSessionStore:
                     select(MessengerActiveSession).where(
                         MessengerActiveSession.user_id == user_id,
                         MessengerActiveSession.channel == channel,
+                        MessengerActiveSession.conversation_id == conversation_id,
                     )
                 )
             ).scalar_one_or_none()
             if existing is not None:
+                existing.conversation_id = conversation_id
                 existing.chat_session_id = chat_session_id
                 existing.mode = mode
             else:
@@ -171,18 +175,22 @@ class ActiveSessionStore:
                     MessengerActiveSession(
                         user_id=user_id,
                         channel=channel,
+                        conversation_id=conversation_id,
                         chat_session_id=chat_session_id,
                         mode=mode,
                     )
                 )
             await s.commit()
 
-    async def clear(self, *, user_id: UUID, channel: str) -> None:
+    async def clear(
+        self, *, user_id: UUID, channel: str, conversation_id: str | None
+    ) -> None:
         async with self._sm() as s:
             await s.execute(
                 delete(MessengerActiveSession).where(
                     MessengerActiveSession.user_id == user_id,
                     MessengerActiveSession.channel == channel,
+                    MessengerActiveSession.conversation_id == conversation_id,
                 )
             )
             await s.commit()

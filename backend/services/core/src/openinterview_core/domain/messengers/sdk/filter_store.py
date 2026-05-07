@@ -13,7 +13,7 @@ Modes:
   all       — pass everything.
 
 Rule kinds:
-  phone — matches if the sender's phone (digits only) equals `value`.
+  phone — matches if a 1:1 chat sender's phone (digits only) equals `value`.
   group — matches if the chat is a group with JID equal to `value`.
 """
 from __future__ import annotations
@@ -50,6 +50,10 @@ def _jid_to_phone(jid: str) -> str:
     # "15551234567:3@s.whatsapp.net" or "15551234567@s.whatsapp.net" -> "15551234567"
     local = jid.split("@", 1)[0]
     return _digits(local.split(":", 1)[0])
+
+
+def _normalize_group_jid(value: str) -> str:
+    return (value or "").strip().lower()
 
 
 class MessengerFilterStore:
@@ -131,7 +135,9 @@ class MessengerFilterStore:
             await s.execute(delete(MessengerFilter).where(MessengerFilter.link_id == link_id))
             seen: set[tuple[str, str]] = set()
             for kind, value, label in rules:
-                value_norm = _digits(value) if kind == "phone" else value.strip()
+                value_norm = (
+                    _digits(value) if kind == "phone" else _normalize_group_jid(value)
+                )
                 if not value_norm:
                     continue
                 k = (kind, value_norm)
@@ -177,10 +183,18 @@ def apply_filter(
     if flt.mode in ("allowlist", "denylist"):
         match = False
         for r in flt.rules:
-            if r.kind == "phone" and sender_phone == _digits(r.value):
+            if (
+                r.kind == "phone"
+                and not is_group
+                and sender_phone == _digits(r.value)
+            ):
                 match = True
                 break
-            if r.kind == "group" and is_group and chat_jid == r.value:
+            if (
+                r.kind == "group"
+                and is_group
+                and _normalize_group_jid(chat_jid) == _normalize_group_jid(r.value)
+            ):
                 match = True
                 break
         return match if flt.mode == "allowlist" else not match
