@@ -6,13 +6,14 @@
 
 Upload a project + resume → get a personalized mentor and interviewer that
 read your repo, ground every claim in real code, and remember what you've
-practiced. Bring your own LLM key — runs locally, your data stays on your box.
+practiced. Bring your own LLM key, run locally, and keep your data on your
+machine.
 
-[![status](https://img.shields.io/badge/status-alpha-orange)]()
-[![license](https://img.shields.io/badge/license-Apache%202.0-blue)]()
-[![python](https://img.shields.io/badge/python-3.11+-3776ab?logo=python&logoColor=white)]()
-[![react](https://img.shields.io/badge/react-18-61dafb?logo=react&logoColor=white)]()
-[![fastapi](https://img.shields.io/badge/fastapi-async-009688?logo=fastapi&logoColor=white)]()
+![status](https://img.shields.io/badge/status-alpha-orange)
+![license](https://img.shields.io/badge/license-Apache%202.0-blue)
+![python](https://img.shields.io/badge/python-3.11+-3776ab?logo=python&logoColor=white)
+![react](https://img.shields.io/badge/react-18-61dafb?logo=react&logoColor=white)
+![fastapi](https://img.shields.io/badge/fastapi-async-009688?logo=fastapi&logoColor=white)
 
 [Quickstart](#-quickstart) ·
 [Features](#-features) ·
@@ -34,13 +35,13 @@ interviews are about **your** projects, **your** resume, and the trade-offs
 Open Interview turns your codebase into the curriculum:
 
 - 📂 **Reads your repo.** A LangGraph mentor browses files, runs `grep`, and
-  reads source — Cursor / Claude Code style — so answers cite real lines.
+  reads source — Cursor / Claude Code style — so answers cite real files.
 - 📝 **Grounds your resume.** Claims are matched against project evidence so
   the interviewer can probe what's actually true.
 - 🧠 **Remembers everything.** Three layers of memory (working / episodic /
   long-term) keep gaps and strengths sticky across sessions.
-- 🎙️ **Voice in.** Talk through your answers — Whisper-class transcription
-  baked in.
+- 🎙️ **Voice practice.** Talk through answers with recorded STT and live
+  interview audio built in.
 - 🔐 **Local-first.** Bring your own OpenAI / Anthropic / Ollama / vLLM key.
   Multi-tenant from day one, your data never leaves your machine.
 
@@ -73,9 +74,9 @@ Add your provider key in **Settings → API keys** once the UI is up. From
 there, upload a project zip + resume, then start a Mentor or Interviewer
 session.
 
-Live voice mode uses local speaker verification. If an existing `.venv`
-predates this feature, run `make setup-speaker` once before starting
-`make realtime` or `make all`.
+Live voice mode uses OpenAI Realtime transcription plus local speaker
+verification. If an existing `.venv` predates this feature, run
+`make setup-speaker` once before starting `make realtime` or `make all`.
 
 ---
 
@@ -137,10 +138,10 @@ one-click Test button. BYO mode = no rate limits.
 ### 🎙️ Voice input & delivery scoring
 Recorded voice answers use browser-native `MediaRecorder` →
 multipart upload → Whisper / `gpt-4o-mini-transcribe`. Live
-interviewer mode uses continuous 24 kHz PCM streaming through the
-OpenInterview realtime gateway, OpenAI Realtime transcription,
+interviewer mode streams continuous 24 kHz PCM through the
+OpenInterview realtime gateway for OpenAI Realtime transcription,
 server-side turn aggregation, and session-local speaker verification.
-Accepted live turns keep the same interviewer agent and persistence
+Accepted live turns reuse the same interviewer agent and persistence
 flow as text turns.
 
 </td>
@@ -177,7 +178,7 @@ limiting + echo suppression keep group chats sane.
 <td width="50%" valign="top">
 
 ### 🧩 Pluggable channels
-Channel SDK modeled on openclaw. Adding WeChat / Telegram /
+Channel SDK modeled after openclaw. Adding WeChat / Telegram /
 Slack is a new `plugins/<id>/` directory — no kernel
 changes. Manifest discovery, capability flags, kernel-
 mediated delivery with chunking + dedup.
@@ -235,6 +236,7 @@ mediated delivery with chunking + dedup.
 ┌─────────────────────────────────────────────────────────┐
 │ OpenAI · Anthropic (adapter) · Ollama · vLLM · OpenRouter │
 └─────────────────────────────────────────────────────────┘
+```
 
 Live interviewer audio runs through a separate realtime gateway:
 
@@ -261,7 +263,6 @@ sequenceDiagram
     RT->>Core: accepted primary-speaker transcript
     Core-->>RT: interviewer SSE tokens
     RT-->>Browser: final_transcript + assistant_token + assistant_done
-```
 ```
 
 ### Repository layout
@@ -401,7 +402,7 @@ and auto-retries once on the well-known `unsupported parameter` and
 ## 🧪 Tests
 
 ```bash
-make test                 # full backend suite (~5s)
+make test                 # full backend suite
 .venv/bin/python -m pytest backend/services/core/tests -q
 cd frontend/app && npx tsc --noEmit && npx vite build
 ```
@@ -427,10 +428,10 @@ and speaker gating, and a typecheck-clean Vite build.
 | **M7** Messenger SDK | ✅ | Plugin SDK + WhatsApp via Baileys sidecar (groups; commands; rate-limit; echo-suppression) |
 | **M8** Common KB | 🚧 | Applied-AI question bank + system-design primer seeds |
 | **M9** Per-user model picks | ✅ | Settings → Models with live `/v1/models` discovery, per-role override, Test before Save; reasoning-model param auto-translation |
-| **M9** Public resources | 🚧 | LeetCode-tagged questions, system design primer, Designing Data-Intensive Apps notes — see [`docs/TODO.md`](docs/TODO.md) |
-| **M10** WhatsApp DMs | 🚧 | Self-DM and direct-message inbound; currently surfaced as "Unavailable" — see [`docs/TODO.md`](docs/TODO.md) |
-| **M11** WeChat | 🚧 | Same SDK; new plugin — see [`docs/TODO.md`](docs/TODO.md) |
-| **M12** Hardening | 🚧 | Observability, export / wipe, real arq offload of QA generation |
+| **M10** Public resources | 🚧 | LeetCode-tagged questions, system design primer, Designing Data-Intensive Apps notes — see [`docs/TODO.md`](docs/TODO.md) |
+| **M11** WhatsApp DMs | 🚧 | Self-DM and direct-message inbound; currently surfaced as "Unavailable" — see [`docs/TODO.md`](docs/TODO.md) |
+| **M12** WeChat | 🚧 | Same SDK; new plugin — see [`docs/TODO.md`](docs/TODO.md) |
+| **M13** Hardening | 🚧 | Observability, export / wipe, real arq offload of QA generation |
 
 ---
 
@@ -454,7 +455,7 @@ over implementations, small modules, tests next to the thing they test.
 
 ## 📜 License
 
-Apache 2.0 — see [`LICENSE`](LICENSE) (TBD).
+Apache 2.0. The license file still needs to be added before distribution.
 
 ---
 
