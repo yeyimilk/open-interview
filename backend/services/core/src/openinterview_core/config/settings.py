@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-jwt-secret-change-me"
     jwt_access_ttl_s: int = 900
     jwt_refresh_ttl_s: int = 2_592_000
+    openinterview_bootstrap_admin_email: str | None = None
 
     # Workers (used by core only to enqueue)
     worker_backend: Literal["arq", "rq", "celery"] = "arq"

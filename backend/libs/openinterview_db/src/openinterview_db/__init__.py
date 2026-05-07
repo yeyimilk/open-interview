@@ -9,6 +9,16 @@ from .models.resume import ClaimMapping, Resume
 from .models.qa import QAItem, QASet
 from .models.chat import ChatMessage, ChatSession, InterviewEvaluation
 from .models.memory import EpisodicMemory, LongTermMemory
+from .models.common_kb import (
+    CommonKBDocument,
+    CommonKBItem,
+    CommonKBItemTag,
+    CommonKBSource,
+    CommonKBSpace,
+    CommonKBTag,
+    CompanyInterviewProfile,
+    UserInterviewPreference,
+)
 from .models.messenger import (
     MessengerActiveSession,
     MessengerFilter,
@@ -39,6 +49,14 @@ __all__ = [
     "InterviewEvaluation",
     "EpisodicMemory",
     "LongTermMemory",
+    "CommonKBSpace",
+    "CommonKBSource",
+    "CommonKBDocument",
+    "CommonKBItem",
+    "CommonKBTag",
+    "CommonKBItemTag",
+    "CompanyInterviewProfile",
+    "UserInterviewPreference",
     "MessengerLink",
     "MessengerPairToken",
     "MessengerActiveSession",

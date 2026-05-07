@@ -14,6 +14,11 @@ export interface UserOut {
   created_at: string;
 }
 
+export interface AdminUserUpdateRequest {
+  tier?: string | null;
+  is_admin?: boolean | null;
+}
+
 export interface ApiKey {
   id: string;
   provider: string;
@@ -118,6 +123,97 @@ export interface ClaimMappingOut {
   project_id: string | null;
   grounding: any | null;
   confidence: number;
+}
+
+// ----- Common KB -----
+
+export interface CommonKBSpaceOut {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface CommonKBSourceOut {
+  id: string;
+  space_id: string;
+  key: string;
+  name: string;
+  source_type: string;
+  base_url: string | null;
+  license: string | null;
+  allowed_use: any | null;
+  refresh_status: string;
+  last_error: string | null;
+  created_at: string;
+}
+
+export interface CommonKBDocumentOut {
+  id: string;
+  space_id: string;
+  source_id: string | null;
+  title: string;
+  filename: string | null;
+  content_type: string | null;
+  blob_path: string | null;
+  canonical_url: string | null;
+  content_hash: string | null;
+  status: string;
+  error: string | null;
+  meta: any | null;
+  tags: string[];
+  create_embeddings: boolean;
+  created_at: string;
+}
+
+export interface CommonKBItemOut {
+  id: string;
+  space_id: string;
+  source_id: string | null;
+  document_id: string | null;
+  item_type: string;
+  category: string;
+  title: string;
+  question: string | null;
+  answer_outline: string | null;
+  content: string | null;
+  difficulty: number;
+  role_family: string | null;
+  level: string | null;
+  company: string | null;
+  language: string | null;
+  provenance: any | null;
+  status: string;
+  version: number;
+  tags: string[];
+  created_at: string;
+}
+
+export interface CompanyInterviewProfileOut {
+  id: string;
+  company_key: string;
+  company: string;
+  role_family: string | null;
+  category_weights: Record<string, number> | null;
+  language_preferences: string[] | null;
+  round_patterns: any[] | null;
+  confidence: number;
+  source_refs: any[] | null;
+  item_count: number;
+  created_at: string;
+}
+
+export interface InterviewPreference {
+  id?: string | null;
+  user_id?: string | null;
+  target_company?: string | null;
+  category_weights?: Record<string, number> | null;
+  languages: string[];
+  interview_style?: string | null;
+  include_company_style: boolean;
+  created_at?: string | null;
 }
 
 // ----- QA -----
@@ -337,6 +433,14 @@ export const api = {
     }),
   me: () => request<UserOut>("/me"),
 
+  // admin users
+  adminListUsers: () => request<UserOut[]>("/admin/users"),
+  adminUpdateUser: (id: string, body: AdminUserUpdateRequest) =>
+    request<UserOut>(`/admin/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
   // api keys
   listApiKeys: () => request<ApiKey[]>("/me/api-keys"),
   addApiKey: (provider: string, label: string, plaintext: string) =>
@@ -454,6 +558,130 @@ export const api = {
       { method: "POST" }
     ),
 
+  // common KB
+  listKBSpaces: () => request<CommonKBSpaceOut[]>("/kb/spaces"),
+  listCompanyProfiles: (query = "") =>
+    request<CompanyInterviewProfileOut[]>(
+      `/kb/company-profiles${query ? `?query=${encodeURIComponent(query)}` : ""}`
+    ),
+  listKBItems: (params: { space?: string; tag?: string; company?: string; category?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.space) q.set("space", params.space);
+    if (params.tag) q.set("tag", params.tag);
+    if (params.company) q.set("company", params.company);
+    if (params.category) q.set("category", params.category);
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<CommonKBItemOut[]>(`/kb/items${suffix}`);
+  },
+  getInterviewPreferences: () =>
+    request<InterviewPreference>("/me/interview-preferences"),
+  putInterviewPreferences: (body: InterviewPreference) =>
+    request<InterviewPreference>("/me/interview-preferences", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  // admin KB
+  adminListSpaces: () => request<CommonKBSpaceOut[]>("/admin/kb/spaces"),
+  adminCreateSpace: (body: { key: string; name: string; description?: string | null; enabled?: boolean }) =>
+    request<CommonKBSpaceOut>("/admin/kb/spaces", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminListSources: (space?: string) =>
+    request<CommonKBSourceOut[]>(
+      `/admin/kb/sources${space ? `?space=${encodeURIComponent(space)}` : ""}`
+    ),
+  adminCreateSource: (body: {
+    space_key: string;
+    key: string;
+    name: string;
+    source_type: string;
+    base_url?: string | null;
+    license?: string | null;
+    allowed_use?: any;
+  }) =>
+    request<CommonKBSourceOut>("/admin/kb/sources", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminRefreshSource: (id: string) =>
+    request<{ status: string }>(`/admin/kb/sources/${id}:refresh`, {
+      method: "POST",
+    }),
+  adminUploadDocument: (
+    spaceKey: string,
+    file: File,
+    sourceId?: string,
+    title?: string,
+    tags: string[] = [],
+    createEmbeddings = true
+  ) => {
+    const fd = new FormData();
+    fd.append("space_key", spaceKey);
+    if (sourceId) fd.append("source_id", sourceId);
+    if (title) fd.append("title", title);
+    if (tags.length > 0) fd.append("tags", JSON.stringify(tags));
+    fd.append("create_embeddings", createEmbeddings ? "true" : "false");
+    fd.append("file", file);
+    return request<CommonKBDocumentOut>("/admin/kb/documents", {
+      method: "POST",
+      body: fd,
+      isJson: false,
+    });
+  },
+  adminListDocuments: (
+    params: string | { space?: string; status?: string; limit?: number } = {}
+  ) => {
+    const q = new URLSearchParams();
+    if (typeof params === "string") {
+      if (params) q.set("space", params);
+    } else {
+      if (params.space) q.set("space", params.space);
+      if (params.status) q.set("status", params.status);
+      if (params.limit) q.set("limit", String(params.limit));
+    }
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<CommonKBDocumentOut[]>(`/admin/kb/documents${suffix}`);
+  },
+  adminDeleteDocument: (id: string) =>
+    request<void>(`/admin/kb/documents/${id}`, {
+      method: "DELETE",
+    }),
+  adminProcessDocument: (id: string) =>
+    request<{ status: string }>(`/admin/kb/documents/${id}:process`, {
+      method: "POST",
+    }),
+  adminListItems: (
+    params: {
+      space?: string;
+      tag?: string;
+      company?: string;
+      category?: string;
+      language?: string;
+      limit?: number;
+    } = {}
+  ) => {
+    const q = new URLSearchParams();
+    if (params.space) q.set("space", params.space);
+    if (params.tag) q.set("tag", params.tag);
+    if (params.company) q.set("company", params.company);
+    if (params.category) q.set("category", params.category);
+    if (params.language) q.set("language", params.language);
+    if (params.limit) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<CommonKBItemOut[]>(`/admin/kb/items${suffix}`);
+  },
+  adminCreateItem: (body: any) =>
+    request<CommonKBItemOut>("/admin/kb/items", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminRebuildCompanyProfiles: () =>
+    request<{ status: string }>("/admin/kb/company-profiles:rebuild", {
+      method: "POST",
+    }),
+
   // qa
   generateQA: (projectId: string, position: string, levels: string[]) =>
     request<{ qa_set_ids: string[] }>(
@@ -510,6 +738,12 @@ export const api = {
       position: string;
       level: string;
       n_questions: number;
+      target_company?: string;
+      preferences?: {
+        category_weights?: Record<string, number>;
+        languages?: string[];
+        include_company_style?: boolean;
+      };
     }
   ) =>
     request<ChatSessionOut>("/interviewer/sessions", {

@@ -1,5 +1,5 @@
 from .common import Level, Position, Category, Source
-from .auth import RegisterRequest, LoginRequest, TokenPair, UserOut
+from .auth import AdminUserUpdateRequest, RegisterRequest, LoginRequest, TokenPair, UserOut
 from .api_keys import CreateApiKeyRequest, ApiKeyOut
 from .projects import (
     CreateProjectRequest,
@@ -46,6 +46,21 @@ from .qa import (
     QASetDetail,
     QASetOut,
 )
+from .common_kb import (
+    CommonKBDocumentOut,
+    CommonKBItemCreate,
+    CommonKBItemOut,
+    CommonKBItemUpdate,
+    CommonKBSourceCreate,
+    CommonKBSourceOut,
+    CommonKBSourceUpdate,
+    CommonKBSpaceCreate,
+    CommonKBSpaceOut,
+    CompanyInterviewProfileOut,
+    InterviewPreferenceIn,
+    InterviewPreferenceOut,
+    InterviewSessionPreferences,
+)
 from .chat import (
     ChatMessageOut,
     ChatSessionOut,
@@ -68,6 +83,7 @@ __all__ = [
     "LoginRequest",
     "TokenPair",
     "UserOut",
+    "AdminUserUpdateRequest",
     "CreateApiKeyRequest",
     "ApiKeyOut",
     "CreateProjectRequest",
@@ -109,6 +125,19 @@ __all__ = [
     "QASetDetail",
     "GenerateQARequest",
     "GenerateQAResponse",
+    "CommonKBSpaceCreate",
+    "CommonKBSpaceOut",
+    "CommonKBSourceCreate",
+    "CommonKBSourceUpdate",
+    "CommonKBSourceOut",
+    "CommonKBDocumentOut",
+    "CommonKBItemCreate",
+    "CommonKBItemUpdate",
+    "CommonKBItemOut",
+    "CompanyInterviewProfileOut",
+    "InterviewPreferenceIn",
+    "InterviewPreferenceOut",
+    "InterviewSessionPreferences",
     "ChatSessionOut",
     "ChatMessageOut",
     "CreateMentorSessionRequest",

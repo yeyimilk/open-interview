@@ -32,3 +32,8 @@ class UserOut(BaseModel):
     tier: str
     is_admin: bool
     created_at: datetime
+
+
+class AdminUserUpdateRequest(BaseModel):
+    tier: str | None = Field(default=None, min_length=1, max_length=32)
+    is_admin: bool | None = None

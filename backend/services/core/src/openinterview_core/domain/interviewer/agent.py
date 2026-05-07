@@ -7,6 +7,7 @@ import json
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import asdict
+from types import SimpleNamespace
 from typing import Any, TypedDict
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from openinterview_schemas import ChatMessage as ChatMessageDTO
 from ...infra.db.qa_repository import SqlQARepository
 from ...infra.db.chat_repository import SqlChatRepository
 from ..memory.recall import MemoryRetriever
+from ..kb import CommonKBRetriever
 from .picker import _claim_signature, pick_next
 
 
@@ -40,11 +42,13 @@ class InterviewerAgent:
         sessionmaker,
         gateway,
         retriever: MemoryRetriever,
+        common_kb: CommonKBRetriever | None = None,
         chat_logical_model: str = "chat-fast",
     ) -> None:
         self._sm = sessionmaker
         self._gw = gateway
         self._retriever = retriever
+        self._common = common_kb
         self._model = chat_logical_model
         self._graph = self._build_graph()
 
@@ -165,6 +169,7 @@ class InterviewerAgent:
         prev_ideal_answer: str,
         recent_claims: list[str] | None = None,
         voice_features: dict | None = None,
+        blueprint: dict | None = None,
     ) -> dict:
         # Reuse the streaming pipeline and collapse to a single result dict.
         chunks: list[str] = []
@@ -179,6 +184,7 @@ class InterviewerAgent:
             prev_ideal_answer=prev_ideal_answer,
             recent_claims=recent_claims,
             voice_features=voice_features,
+            blueprint=blueprint,
         ):
             t = ev.get("type")
             if t == "token":
@@ -209,6 +215,7 @@ class InterviewerAgent:
         prev_ideal_answer: str,
         recent_claims: list[str] | None = None,
         voice_features: dict | None = None,
+        blueprint: dict | None = None,
     ) -> AsyncIterator[dict]:
         """Stream tokens progressively.
 
@@ -273,7 +280,20 @@ class InterviewerAgent:
             items = await SqlQARepository(s).list_items(
                 user_id=user_id, qa_set_id=qa_set_id
             )
+        if blueprint and self._common is not None:
+            common_items = await self._common_candidates(
+                user_id=user_id,
+                query=_common_query(
+                    user_input=user_input,
+                    prev_question=prev_question,
+                    blueprint=blueprint,
+                ),
+                blueprint=blueprint,
+            )
+            items = list(items) + common_items
         asked = set(asked_ids or set())
+        if blueprint and len(asked) >= int(blueprint.get("n_questions") or 5):
+            items = []
         recent_dq: deque[str] = deque(
             (recent_claims or []), maxlen=3
         )
@@ -282,6 +302,7 @@ class InterviewerAgent:
             asked_question_ids=asked,
             long_term=recalled.long_term,
             recent_claims=recent_dq,
+            category_weights=(blueprint or {}).get("category_weights") if blueprint else None,
         )
 
         chunks: list[str] = []
@@ -337,6 +358,9 @@ class InterviewerAgent:
             # being probed. We pull it from the picked item's meta blob.
             pick_meta = getattr(pick, "meta", None)
             if isinstance(pick_meta, dict):
+                if pick_meta.get("source") == "common":
+                    source = pick_meta.get("source_label") or "common interview KB"
+                    yield _emit(f"Source: {source}\n\n")
                 claim_text = (pick_meta.get("claim") or "").strip()
                 section = pick_meta.get("claim_section") or ""
                 if claim_text:
@@ -373,6 +397,50 @@ class InterviewerAgent:
             },
         }
 
+    async def _common_candidates(self, *, user_id: UUID, query: str, blueprint: dict) -> list:
+        if self._common is None:
+            return []
+        weights = blueprint.get("category_weights") or {}
+        categories = [
+            k for k, _ in sorted(weights.items(), key=lambda kv: float(kv[1] or 0), reverse=True)
+            if k not in {"experience_claim", "project_overview", "behavioral_grounded"}
+        ][:5]
+        company = blueprint.get("target_company") if blueprint.get("include_company_style", True) else None
+        languages = blueprint.get("languages") or []
+        matches = await self._common.retrieve(
+            user_id=user_id,
+            query=query,
+            categories=categories or None,
+            company=company,
+            languages=languages or None,
+            k=8,
+        )
+        out = []
+        for m in matches:
+            try:
+                mid = UUID(m.id)
+            except ValueError:
+                continue
+            q = _question_from_match(m)
+            answer = _answer_from_match(m)
+            out.append(
+                SimpleNamespace(
+                    id=mid,
+                    category=m.category,
+                    difficulty=3,
+                    question=q,
+                    ideal_answer=answer,
+                    meta={
+                        "source": "common",
+                        "source_label": m.source,
+                        "company": m.company,
+                        "language": m.language,
+                        "tags": m.tags,
+                    },
+                )
+            )
+        return out
+
 
 def _safe_json(text: str, *, default):
     try:
@@ -384,3 +452,32 @@ def _safe_json(text: str, *, default):
         return json.loads(cleaned)
     except Exception:
         return default
+
+
+def _common_query(*, user_input: str, prev_question: str, blueprint: dict) -> str:
+    bits = [
+        user_input,
+        prev_question,
+        blueprint.get("target_company") or "",
+        " ".join(blueprint.get("languages") or []),
+        " ".join((blueprint.get("category_weights") or {}).keys()),
+    ]
+    return " ".join(x for x in bits if x).strip() or "realistic software engineering mock interview question"
+
+
+def _question_from_match(match) -> str:
+    text = (match.text or "").strip()
+    for line in text.splitlines():
+        s = line.strip()
+        if s.endswith("?"):
+            return s[:800]
+    if match.title.endswith("?"):
+        return match.title
+    return f"Walk me through this interview topic: {match.title}"
+
+
+def _answer_from_match(match) -> str:
+    text = (match.text or "").strip()
+    if text:
+        return text[:1500]
+    return "A strong answer should cover the approach, trade-offs, edge cases, and level-appropriate depth."

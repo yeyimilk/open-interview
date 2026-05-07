@@ -17,12 +17,25 @@ class ChromaVectorStore(VectorStore):
             raise RuntimeError(
                 "chromadb is required for VECTOR_BACKEND=chroma. pip install chromadb."
             ) from e
+        from chromadb.config import Settings as ChromaSettings  # type: ignore
         from urllib.parse import urlparse
 
         u = urlparse(url)
         host = u.hostname or "localhost"
         port = u.port or 8000
-        self._client = chromadb.HttpClient(host=host, port=port)
+        self._client = chromadb.HttpClient(
+            host=host,
+            port=port,
+            settings=ChromaSettings(
+                anonymized_telemetry=False,
+                chroma_product_telemetry_impl=(
+                    "openinterview_core.infra.vector.chroma_telemetry.NoopProductTelemetryClient"
+                ),
+                chroma_telemetry_impl=(
+                    "openinterview_core.infra.vector.chroma_telemetry.NoopProductTelemetryClient"
+                ),
+            ),
+        )
 
     def _coll(self, name: str):
         return self._client.get_or_create_collection(name=name)
@@ -49,6 +62,12 @@ class ChromaVectorStore(VectorStore):
             out.append(VectorMatch(id=ids[i], text=docs[i], metadata=dict(metas[i] or {}), score=score))
         return out
 
+    async def delete(self, *, collection: str, ids: list[str]) -> None:  # type: ignore[override]
+        if not ids:
+            return
+        c = self._coll(collection)
+        c.delete(ids=ids)
+
     async def delete_collection(self, collection: str) -> None:  # type: ignore[override]
         try:
             self._client.delete_collection(collection)
@@ -66,3 +85,8 @@ def vector_collection_for_user_qa(user_id: str) -> str:
 
 def vector_collection_for_user_memory(user_id: str) -> str:
     return f"user_{user_id}_memory".replace("-", "")
+
+
+def vector_collection_for_common_kb(space_key: str) -> str:
+    safe = "".join(ch if ch.isalnum() else "_" for ch in space_key.lower()).strip("_")
+    return f"common_kb_{safe or 'default'}"

@@ -4,12 +4,15 @@ import {
   Folders,
   GraduationCap,
   Home,
+  Database,
+  ListChecks,
   LogOut,
   Menu,
   MessageSquare,
   Mic,
   Settings,
   Sparkles,
+  Users,
 } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
@@ -69,15 +72,25 @@ function Brand() {
 }
 
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
+  const { user } = useAuth();
+  const nav = user?.is_admin
+    ? [
+        ...NAV,
+        { to: "/admin/users", label: "Users", icon: Users },
+        { to: "/admin/kb", label: "KB Upload", icon: Database },
+        { to: "/admin/kb/documents", label: "KB Documents", icon: FileText },
+        { to: "/admin/kb/items", label: "KB Items", icon: ListChecks },
+      ]
+    : NAV;
   return (
     <nav className="flex-1 space-y-1 px-2">
-      {NAV.map((item) => {
+      {nav.map((item) => {
         const Icon = item.icon;
         return (
           <NavLink
             key={item.to}
             to={item.to}
-            end={item.to === "/"}
+            end={item.to === "/" || item.to === "/admin/kb"}
             onClick={onNavigate}
             className={({ isActive }) =>
               cn(

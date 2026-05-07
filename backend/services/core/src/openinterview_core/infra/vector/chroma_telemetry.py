@@ -1,0 +1,11 @@
+"""No-op Chroma telemetry client for local vector-store usage."""
+from __future__ import annotations
+
+from chromadb.telemetry.product import ProductTelemetryClient, ProductTelemetryEvent
+from overrides import override
+
+
+class NoopProductTelemetryClient(ProductTelemetryClient):
+    @override
+    def capture(self, event: ProductTelemetryEvent) -> None:
+        return None

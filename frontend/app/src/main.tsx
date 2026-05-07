@@ -23,6 +23,10 @@ import { QASetPage } from "./features/qa/QASetPage";
 import { ResumeDetailPage } from "./features/resumes/ResumeDetailPage";
 import { ResumesPage } from "./features/resumes/ResumesPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
+import { AdminKBPage } from "./features/admin/AdminKBPage";
+import { AdminKBDocumentsPage } from "./features/admin/AdminKBDocumentsPage";
+import { AdminKBItemsPage } from "./features/admin/AdminKBItemsPage";
+import { AdminUsersPage } from "./features/admin/AdminUsersPage";
 import { HomePage } from "./pages/HomePage";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -53,6 +57,38 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <SettingsPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="admin/users"
+                element={
+                  <RequireAuth>
+                    <AdminUsersPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="admin/kb"
+                element={
+                  <RequireAuth>
+                    <AdminKBPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="admin/kb/documents"
+                element={
+                  <RequireAuth>
+                    <AdminKBDocumentsPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="admin/kb/items"
+                element={
+                  <RequireAuth>
+                    <AdminKBItemsPage />
                   </RequireAuth>
                 }
               />

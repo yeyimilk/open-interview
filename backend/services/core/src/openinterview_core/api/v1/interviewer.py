@@ -17,7 +17,8 @@ from openinterview_schemas import (
     UpdateChatSessionRequest,
 )
 
-from ...domain.interviewer import InterviewerAgent, SessionEvaluator
+from ...domain.interviewer import InterviewBlueprintService, InterviewerAgent, SessionEvaluator
+from ...domain.kb import CommonKBRetriever
 from ...domain.memory import MemoryDistiller, MemoryRetriever
 from ...domain.projects.embedder import GatewayEmbedder
 from ...domain.qa import QAGenerationService
@@ -47,6 +48,11 @@ def _agent(request: Request) -> InterviewerAgent:
         sessionmaker=sm,
         gateway=request.app.state.gateway,
         retriever=_retriever(request),
+        common_kb=CommonKBRetriever(
+            sessionmaker=sm,
+            gateway=request.app.state.gateway,
+            vector_store=request.app.state.vector_store,
+        ),
     )
 
 
@@ -134,6 +140,16 @@ async def create_session(
         session_project_id = body.project_id
 
     chat_repo = SqlChatRepository(session)
+    blueprint = await InterviewBlueprintService(
+        sessionmaker=request.app.state.db.sessionmaker
+    ).build(
+        user_id=user.id,
+        position=body.position,
+        level=body.level,
+        n_questions=body.n_questions,
+        target_company=body.target_company,
+        session_preferences=body.preferences.model_dump() if body.preferences else None,
+    )
     sess = await chat_repo.create_session(
         user_id=user.id,
         mode="interviewer",
@@ -144,6 +160,9 @@ async def create_session(
             "position": body.position,
             "level": body.level,
             "n_questions": int(body.n_questions),
+            "target_company": body.target_company,
+            "preferences": body.preferences.model_dump() if body.preferences else None,
+            "blueprint": blueprint.model_dump(),
             "asked_ids": [],
             "recent_claims": [],
             "current_question": "",
@@ -165,6 +184,7 @@ async def create_session(
                 asked_ids=set(),
                 prev_question="",
                 prev_ideal_answer="",
+                blueprint=blueprint.model_dump(),
             )
             if first.get("chosen_question"):
                 claim_text = first.get("claim")
@@ -320,6 +340,7 @@ async def send_message(
     prev_q = str(target.get("current_question") or "")
     prev_a = str(target.get("current_ideal_answer") or "")
     recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
+    blueprint = target.get("blueprint") if isinstance(target.get("blueprint"), dict) else None
 
     await repo.append_message(
         session_id=session_id, user_id=user.id, role="user", content=body.content
@@ -341,6 +362,7 @@ async def send_message(
                 prev_question=prev_q,
                 prev_ideal_answer=prev_a,
                 recent_claims=recent_claims,
+                blueprint=blueprint,
             ):
                 kind = ev.get("type", "message")
                 if kind == "token":
@@ -415,6 +437,7 @@ async def send_audio_message(
     prev_q = str(target.get("current_question") or "")
     prev_a = str(target.get("current_ideal_answer") or "")
     recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
+    blueprint = target.get("blueprint") if isinstance(target.get("blueprint"), dict) else None
 
     audio_bytes = await audio.read()
     if not audio_bytes:
@@ -473,6 +496,7 @@ async def send_audio_message(
                 prev_ideal_answer=prev_a,
                 recent_claims=recent_claims,
                 voice_features=voice_features,
+                blueprint=blueprint,
             ):
                 kind = ev.get("type", "message")
                 if kind == "token":

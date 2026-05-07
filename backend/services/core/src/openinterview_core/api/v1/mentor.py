@@ -18,6 +18,7 @@ from openinterview_schemas import (
 
 from ...domain.memory import MemoryDistiller, MemoryRetriever
 from ...domain.mentor import MentorAgent
+from ...domain.kb import CommonKBRetriever
 from ...domain.projects.embedder import GatewayEmbedder
 from ...infra.db import get_session_dep
 from ...infra.db.chat_repository import SqlChatRepository
@@ -38,11 +39,17 @@ def _retriever(request: Request) -> MemoryRetriever:
 
 
 def _agent(request: Request) -> MentorAgent:
+    sm: async_sessionmaker[AsyncSession] = request.app.state.db.sessionmaker
     return MentorAgent(
         gateway=request.app.state.gateway,
         embedder=GatewayEmbedder(request.app.state.gateway),
         vector_store=request.app.state.vector_store,
         retriever=_retriever(request),
+        common_kb=CommonKBRetriever(
+            sessionmaker=sm,
+            gateway=request.app.state.gateway,
+            vector_store=request.app.state.vector_store,
+        ),
         blob=request.app.state.blob,
     )
 

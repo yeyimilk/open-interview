@@ -32,18 +32,29 @@ class IssuedTokens:
 
 
 class AuthService:
-    def __init__(self, users: UserRepository, tokens: TokenIssuer) -> None:
+    def __init__(
+        self,
+        users: UserRepository,
+        tokens: TokenIssuer,
+        bootstrap_admin_email: str | None = None,
+    ) -> None:
         self._users = users
         self._tokens = tokens
+        self._bootstrap_admin_email = (
+            bootstrap_admin_email.strip().lower() if bootstrap_admin_email else None
+        )
 
     async def register(self, *, email: str, password: str, display_name: str) -> User:
         email_norm = email.strip().lower()
         if await self._users.get_by_email(email_norm) is not None:
             raise EmailAlreadyExists(email_norm)
+        is_first_user = await self._users.count_users() == 0
+        is_bootstrap_admin = email_norm == self._bootstrap_admin_email
         return await self._users.create(
             email=email_norm,
             password_hash=hash_password(password),
             display_name=display_name.strip(),
+            is_admin=is_first_user or is_bootstrap_admin,
         )
 
     async def login(self, *, email: str, password: str) -> tuple[User, IssuedTokens]:
@@ -52,8 +63,11 @@ class AuthService:
             raise InvalidCredentials()
         return user, self._issue_tokens(user.id, user.is_admin)
 
-    async def refresh(self, user_id: UUID, is_admin: bool) -> IssuedTokens:
-        return self._issue_tokens(user_id, is_admin)
+    async def refresh(self, user_id: UUID) -> IssuedTokens:
+        user = await self._users.get_by_id(user_id)
+        if user is None:
+            raise InvalidCredentials()
+        return self._issue_tokens(user.id, user.is_admin)
 
     def _issue_tokens(self, user_id: UUID, is_admin: bool) -> IssuedTokens:
         access, access_exp = self._tokens.issue_access(user_id, is_admin)
