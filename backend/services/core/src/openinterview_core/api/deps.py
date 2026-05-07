@@ -22,11 +22,17 @@ def get_token_issuer(request: Request) -> TokenIssuer:
 
 
 def get_auth_service(
+    request: Request,
     session: AsyncSession = Depends(get_session_dep),
     issuer: TokenIssuer = Depends(get_token_issuer),
 ) -> AuthService:
     repo = SqlUserRepository(session)
-    return AuthService(users=repo, tokens=issuer)
+    settings = request.app.state.settings
+    return AuthService(
+        users=repo,
+        tokens=issuer,
+        bootstrap_admin_email=settings.openinterview_bootstrap_admin_email,
+    )
 
 
 async def get_current_user(

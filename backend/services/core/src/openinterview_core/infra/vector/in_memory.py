@@ -32,6 +32,14 @@ class InMemoryVectorStore(VectorStore):
         scored.sort(key=lambda m: m.score, reverse=True)
         return scored[:k]
 
+    async def delete(self, *, collection: str, ids: list[str]) -> None:  # type: ignore[override]
+        if not ids:
+            return
+        remove = set(ids)
+        self._cols[collection] = [
+            (rec, emb) for rec, emb in self._cols.get(collection, []) if rec.id not in remove
+        ]
+
     async def delete_collection(self, collection: str) -> None:  # type: ignore[override]
         self._cols.pop(collection, None)
 

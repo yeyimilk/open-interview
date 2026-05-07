@@ -48,3 +48,7 @@ def resume_original(user_id: str | UUID, resume_id: str | UUID, ext: str) -> str
 
 def export_archive(user_id: str | UUID, export_id: str | UUID) -> str:
     return f"{user_root(user_id)}/exports/{_uid(export_id)}.zip"
+
+
+def common_kb_document(document_id: str | UUID, filename: str = "original") -> str:
+    return f"common/kb/documents/{_uid(document_id)}/{_safe(filename)}"

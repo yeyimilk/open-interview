@@ -9,12 +9,15 @@ from openinterview_db import Base
 from openinterview_logging import configure_logging, get_logger
 
 from .api.v1 import api_keys as api_keys_v1
+from .api.v1 import admin_kb as admin_kb_v1
+from .api.v1 import admin_users as admin_users_v1
 from .api.v1 import model_preferences as model_preferences_v1
 from .api.v1 import audio as audio_v1
 from .api.v1 import auth as auth_v1
 from .api.v1 import general as general_v1
 from .api.v1 import health as health_v1
 from .api.v1 import interviewer as interviewer_v1
+from .api.v1 import kb as kb_v1
 from .api.v1 import me as me_v1
 from .api.v1 import mentor as mentor_v1
 from .api.v1 import messaging as messaging_v1
@@ -112,6 +115,23 @@ async def _dev_patch_columns(conn) -> None:
         )
 
 
+async def _promote_bootstrap_admin(app: FastAPI) -> None:
+    settings: Settings = app.state.settings
+    email = (settings.openinterview_bootstrap_admin_email or "").strip().lower()
+    if not email:
+        return
+
+    from .infra.db.user_repository import SqlUserRepository
+
+    async with app.state.db.session() as session:
+        repo = SqlUserRepository(session)
+        user = await repo.get_by_email(email)
+        if user is None or user.is_admin:
+            return
+        await repo.update_user(user.id, is_admin=True)
+        log.info("bootstrap_admin_promoted", email=email)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     settings: Settings = app.state.settings
@@ -123,6 +143,7 @@ async def _lifespan(app: FastAPI):
             # Lightweight column patch-ups for dev. `create_all` only adds
             # missing tables; it does NOT add new columns to existing ones.
             await _dev_patch_columns(conn)
+    await _promote_bootstrap_admin(app)
 
     # Messenger runtime: kernel + plugin registry. Plugins discovered from
     # `domain/messengers/plugins/<id>/plugin.json`.
@@ -185,6 +206,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(projects_v1.router, prefix=api_prefix)
     app.include_router(resumes_v1.router, prefix=api_prefix)
     app.include_router(qa_v1.router, prefix=api_prefix)
+    app.include_router(kb_v1.router, prefix=api_prefix)
+    app.include_router(admin_kb_v1.router, prefix=api_prefix)
+    app.include_router(admin_users_v1.router, prefix=api_prefix)
     app.include_router(mentor_v1.router, prefix=api_prefix)
     app.include_router(general_v1.router, prefix=api_prefix)
     app.include_router(interviewer_v1.router, prefix=api_prefix)

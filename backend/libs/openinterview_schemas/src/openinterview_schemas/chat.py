@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
+from .common_kb import InterviewSessionPreferences
+
 
 class ChatSessionOut(BaseModel):
     id: UUID
@@ -64,6 +66,8 @@ class CreateInterviewerSessionRequest(BaseModel):
     position: str = "swe_generic"
     level: str = "mid"
     n_questions: int = 5
+    target_company: str | None = None
+    preferences: InterviewSessionPreferences | None = None
 
     @model_validator(mode="after")
     def _exactly_one_target(self) -> "CreateInterviewerSessionRequest":

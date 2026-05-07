@@ -61,7 +61,10 @@ async def refresh(
         raise HTTPException(status_code=401, detail="invalid refresh token")
     if claims.typ != "refresh":
         raise HTTPException(status_code=401, detail="not a refresh token")
-    tokens = await auth.refresh(claims.user_id, claims.is_admin)
+    try:
+        tokens = await auth.refresh(claims.user_id)
+    except InvalidCredentials:
+        raise HTTPException(status_code=401, detail="user not found")
     return TokenPair(
         access_token=tokens.access_token,
         refresh_token=tokens.refresh_token,

@@ -30,6 +30,7 @@ def pick_next(
     asked_question_ids: set[UUID],
     long_term: list[RecalledLongTerm],
     recent_claims: deque[str] | None = None,
+    category_weights: dict[str, float] | None = None,
 ):
     if not items:
         return None
@@ -41,6 +42,8 @@ def pick_next(
     def score(item) -> float:
         s = 0.0
         cat = (item.category or "").lower()
+        if category_weights:
+            s += 2.0 * float(category_weights.get(cat, 0.0))
         if cat and cat in gap_terms:
             s += 2.0
         if cat and cat in strength_terms:

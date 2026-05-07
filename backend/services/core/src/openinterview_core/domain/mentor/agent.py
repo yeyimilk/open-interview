@@ -27,6 +27,7 @@ from ...infra.vector import (
 from ..memory.recall import MemoryRetriever
 from ..projects.embedder import GatewayEmbedder
 from ..projects.fs import ProjectFs
+from ..kb import CommonKBRetriever
 from .tools import (
     MAX_TOOL_TURNS,
     MAX_TOTAL_RESULT_CHARS,
@@ -43,6 +44,7 @@ class MentorAgent:
         embedder: GatewayEmbedder,
         vector_store: VectorStore,
         retriever: MemoryRetriever,
+        common_kb: CommonKBRetriever | None = None,
         blob=None,
         chat_logical_model: str = "chat-fast",
     ) -> None:
@@ -50,6 +52,7 @@ class MentorAgent:
         self._embed = embedder
         self._vs = vector_store
         self._retriever = retriever
+        self._common = common_kb
         self._blob = blob
         self._model = chat_logical_model
 
@@ -60,6 +63,7 @@ class MentorAgent:
         *,
         recalled,
         workspace_brief: str,
+        common_ctx: list[dict],
         user_input: str,
     ) -> list[ChatMessageDTO]:
         """Build messages for /chat (general) mode — a plain assistant
@@ -77,6 +81,12 @@ class MentorAgent:
             ctx_lines.append("\nWHAT WE KNOW ABOUT THE USER:")
             for lt in recalled.long_term[:5]:
                 ctx_lines.append(f"- [{lt.kind}] {lt.content}")
+        if common_ctx:
+            ctx_lines.append("\nCOMMON INTERVIEW KB:")
+            for c in common_ctx[:5]:
+                ctx_lines.append(
+                    f"- [{c['source']} / {c['category']}] {c['title']}: {c['snippet']}"
+                )
 
         system = (
             "You are a helpful general-purpose assistant accessed over a "
@@ -110,6 +120,7 @@ class MentorAgent:
         *,
         recalled,
         proj_ctx: list[dict],
+        common_ctx: list[dict],
         user_input: str,
         has_project: bool,
     ) -> list[ChatMessageDTO]:
@@ -127,12 +138,19 @@ class MentorAgent:
             ctx_lines.append("\nRELEVANT PROJECT EVIDENCE (vector search):")
             for c in proj_ctx[:5]:
                 ctx_lines.append(f"- {c['rel_path']}: {c['snippet']}")
+        if common_ctx:
+            ctx_lines.append("\nRELEVANT COMMON KB (public interview prep):")
+            for c in common_ctx[:6]:
+                ctx_lines.append(
+                    f"- [{c['source']} / {c['category']}] {c['title']}: {c['snippet']}"
+                )
 
         system = (
             "You are an expert SWE/Applied AI interview coach (Mentor mode). "
             "Be concrete, kind, and reference the user's project when possible. "
             "If the user asks something not covered, explain general principles "
-            "AND show how to apply them to their project."
+            "AND show how to apply them to their project. Clearly label whether "
+            "evidence comes from the user's project/resume or from common interview KB."
         )
         if has_project:
             system += (
@@ -195,6 +213,27 @@ class MentorAgent:
         except Exception:
             return []
 
+    async def _common_context(
+        self, *, user_id: UUID, query: str, project_id: UUID | None = None
+    ) -> list[dict]:
+        if self._common is None:
+            return []
+        try:
+            matches = await self._common.retrieve(user_id=user_id, query=query, k=6)
+            return [
+                {
+                    "title": m.title,
+                    "category": m.category,
+                    "source": m.source,
+                    "snippet": m.text[:500],
+                    "company": m.company,
+                    "language": m.language,
+                }
+                for m in matches
+            ]
+        except Exception:
+            return []
+
     # ------- general /chat entry -------
 
     async def general_stream(
@@ -210,9 +249,11 @@ class MentorAgent:
         recalled = await self._retriever.recall(
             user_id=user_id, session_id=session_id, query=user_input
         )
+        common_ctx = await self._common_context(user_id=user_id, query=user_input)
         messages = self._build_general_messages(
             recalled=recalled,
             workspace_brief=workspace_brief,
+            common_ctx=common_ctx,
             user_input=user_input,
         )
         chunks: list[str] = []
@@ -252,10 +293,14 @@ class MentorAgent:
                 user_id=user_id, project_id=project_id, query=user_input
             )
             fs = await self._load_fs(user_id, project_id)
+        common_ctx = await self._common_context(
+            user_id=user_id, project_id=project_id, query=user_input
+        )
 
         messages = self._build_messages(
             recalled=recalled,
             proj_ctx=proj_ctx,
+            common_ctx=common_ctx,
             user_input=user_input,
             has_project=fs is not None,
         )
