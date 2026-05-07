@@ -4,7 +4,7 @@ Active backlog of work items that didn't fit in the current iteration.
 Items are grouped by theme, then sized roughly. Anything you want to
 pick up, open an issue first so we can discuss the shape before code.
 
-Last updated: 2026-05-01
+Last updated: 2026-05-07
 
 ---
 
@@ -143,21 +143,63 @@ target positions.
 
 ---
 
-## 3. Memory & retrieval
+## 3. Retrieval and RAG architecture
 
-### 3.1 Workspace-wide RAG for `/chat`  ⏱ medium
+### 3.1 Standalone retrieval / RAG service boundary  ⏱ large
+
+**Problem.** Retrieval is becoming a platform capability, not just a helper
+inside Mentor or Interviewer. Today project chunks, resume claims, generated
+QA, common KB, and long-term memory are retrieved through several in-process
+paths (`MemoryRetriever`, `CommonKBRetriever`, project vector collections,
+claim mapping, mentor/interviewer-specific prompts). As the number of sources
+grows, ranking, filtering, citations, permissions, and evaluation will become
+hard to reason about if they stay scattered across Core domain code.
+
+**Target shape.** Create a dedicated retrieval boundary first, then decide
+whether to deploy it as a separate process once the contract stabilizes.
+The boundary should own:
+- Source adapters for project code chunks, resume claims, generated QA,
+  common KB, chat history, episodic memory, long-term memory, and future
+  curated learning resources.
+- Query planning: source selection, per-source top-k, filters, recency,
+  role/session context, and user/project permissions.
+- Ranking and merging: hybrid scoring, reranking, dedupe, citation packing,
+  token-budget aware context assembly.
+- Retrieval observability: query, selected sources, scores, rejected matches,
+  latency, and prompt context size.
+- Evaluation fixtures for recall/precision against known project/resume
+  questions.
+
+**First slice.**
+- Define a `RetrievalService` interface and DTOs in shared schemas:
+  `RetrieveRequest`, `RetrieveResponse`, `RetrievedChunk`, `Citation`.
+- Move existing retrieval call sites behind that interface without changing
+  behavior.
+- Keep implementation in-process initially; expose HTTP only after Mentor,
+  Interviewer, resume claim mapping, and general chat are all using the same
+  boundary.
+- Add a small golden test set: project-specific question, resume claim
+  grounding question, common-KB question, and mixed query.
+
+**Non-goals for first slice.**
+- New vector database.
+- Re-indexing every artifact.
+- Making retrieval provider-neutral across all embedding vendors before the
+  source/ranking contract is proven.
+
+### 3.2 Workspace-wide RAG for `/chat`  ⏱ medium
 
 Current `/chat` mode hits per-user memory but not project chunks.
 Implement a fan-out retriever: top-k chunks from each project (k=2),
 plus resume parsed text, re-ranked by score. Stream into the system
 prompt of `general_stream`.
 
-### 3.2 Long-term memory pinning  ⏱ small
+### 3.3 Long-term memory pinning  ⏱ small
 
 Let users mark a memory item as "pinned" so the distiller won't
 prune it. UI: long-press in the memory panel.
 
-### 3.3 Per-project memory namespacing  ⏱ small
+### 3.4 Per-project memory namespacing  ⏱ small
 
 Today's long-term memory is per-user. Optional per-project memory
 helps when a user has many projects (e.g. "this fact only applies
@@ -165,7 +207,92 @@ to project X").
 
 ---
 
-## 4. Hardening / ops
+## 4. Interview intelligence
+
+### 4.1 Standalone question-set generation boundary  ⏱ large
+
+**Problem.** Question/test-set generation is already more than a simple
+helper: it plans topic coverage, retrieves grounding material, runs sharded
+generation, merges/dedupes, persists QA sets, and may soon generate multiple
+types of interview assets. Keeping this logic buried inside Core will make it
+hard to add richer test sets, regenerate slices, compare quality, or retry
+long-running work safely.
+
+**Target shape.** Extract a `QuestionSetService` boundary that owns the full
+question/test-set lifecycle:
+- Inputs: project, resume, target role/level, company style, selected skills,
+  requested interview format, and generation constraints.
+- Planning: coverage matrix by topic, depth, difficulty, project/resume
+  evidence requirements, behavioral/system-design/Applied-AI allocation.
+- Generation jobs: sharded generation, retry/resume, temp artifacts,
+  partial-result visibility, merge/dedupe.
+- Outputs: canonical question set, ideal answer outline, evidence/citations,
+  rubric, expected follow-up dimensions, and quality metadata.
+- Evaluation: offline quality checks, duplicate detection, grounding coverage,
+  and user feedback/flagging loop.
+
+**First slice.**
+- Keep the service in-process but move orchestration out of `QAGenerationService`
+  into a narrower application boundary with explicit request/response DTOs.
+- Preserve existing project-scoped and resume-scoped QA APIs.
+- Add one richer output field to each generated item: `follow_up_axes`
+  (for example: implementation details, trade-offs, scale, debugging,
+  ownership, failure modes).
+- Add job-state tests for resume/project generation, retry after shard failure,
+  and deterministic merge.
+
+**Later split candidates.**
+- Worker-only deployable for long generation jobs.
+- Dedicated storage for generation artifacts and eval reports.
+- Admin UI for question-set quality review and regeneration.
+
+### 4.2 Threaded mock interview flow with deeper follow-ups  ⏱ large
+
+**Problem.** The current mock interviewer mostly picks one question from a
+bank, evaluates the answer, then moves to another bank question. That is useful
+for practice, but it does not feel like a real interview. Real interviewers
+usually start with a simple project overview question, identify an interesting
+area, and then drill down with follow-ups on design choices, implementation
+details, trade-offs, bugs, scale, and ownership before changing topics.
+
+**Target behavior.**
+- Start each project/resume thread with a lightweight opener:
+  "Tell me about X" or "What was your role in X?"
+- Maintain an interview thread state: current project/claim/topic, depth,
+  answer quality, uncovered follow-up axes, and when to move on.
+- Prefer depth-first follow-ups for 2-4 turns when the candidate gives enough
+  material, instead of always advancing to a new question.
+- Ask progressively deeper questions:
+  overview → architecture/design → implementation details → trade-offs →
+  failure modes/debugging → scale/metrics → reflection.
+- Fall back to a new topic when the candidate cannot answer, has already
+  covered the axis well, or the configured depth/time budget is exhausted.
+- Use the existing evaluation to decide whether the next turn should be a
+  clarification, a deeper probe, a challenge, or a topic switch.
+
+**Implementation notes.**
+- Do not hard-code follow-ups as text appended after every answer. Model this
+  as an interview policy/planner that emits the next action:
+  `ask_opener`, `ask_follow_up`, `challenge_claim`, `switch_topic`,
+  `wrap_up`.
+- Persist thread state in the interviewer session target so reconnects and
+  live-audio turns keep context.
+- Let generated question sets provide `follow_up_axes`; the interviewer policy
+  chooses from those axes at runtime based on the answer.
+- Add a UI indicator for "follow-up" vs "new topic" only if it helps users
+  understand the flow; do not make it feel scripted.
+
+**Acceptance tests.**
+- A strong answer to a project opener triggers a deeper project follow-up,
+  not an unrelated bank question.
+- A shallow answer triggers a clarification or easier probe before switching.
+- After the configured depth budget, the interviewer moves to a new topic.
+- Follow-up state survives refresh/reconnect.
+- End-of-session evaluation can summarize both breadth and depth coverage.
+
+---
+
+## 5. Hardening / ops
 
 - **Observability**: structured logging for messenger turns, gateway
   calls per session, distiller runs. Tracing via OpenTelemetry — at
@@ -182,7 +309,7 @@ to project X").
 
 ---
 
-## 5. Frontend polish
+## 6. Frontend polish
 
 - **Messaging settings**: real-time status pill (Connected / Pairing
   / Re-pair needed) instead of polling-only.
@@ -195,7 +322,7 @@ to project X").
 
 ---
 
-## 6. Tests we should have but don't
+## 7. Tests we should have but don't
 
 - End-to-end "owner sends message in group, bot replies, no loop"
   using FakeDriver across 5 round-trips.
@@ -208,7 +335,7 @@ to project X").
 
 ---
 
-## 7. Documentation
+## 8. Documentation
 
 - A short `docs/messenger-plugins.md` walking new contributors
   through "implement a channel in 90 minutes": manifest, runtime,
