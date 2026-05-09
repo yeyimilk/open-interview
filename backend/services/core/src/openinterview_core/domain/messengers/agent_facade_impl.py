@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openinterview_db import ChatMessage, ChatSession, ClaimMapping, Project, Resume
+from openinterview_logging import get_logger
 
 from ..interviewer import InterviewerAgent, SessionEvaluator
 from ..mentor import MentorAgent
@@ -17,12 +18,16 @@ from ..qa import QAGenerationService
 from ..workspace import workspace_brief
 from ...infra.db.chat_repository import SqlChatRepository
 from ...infra.db.qa_repository import SqlQARepository
+from ...infra.jobs import enqueue_arq_job
+from ...infra.tracing import set_current_span_attribute, start_span
 from .sdk.agent_facade import (
     AgentFacade,
     ProjectBrief,
     ResumeBrief,
     SessionBrief,
 )
+
+log = get_logger(__name__)
 
 
 def _short(u: UUID) -> str:
@@ -58,12 +63,50 @@ class CoreAgentFacade(AgentFacade):
         interviewer: InterviewerAgent,
         evaluator: SessionEvaluator,
         qa: QAGenerationService,
+        redis_url: str | None = None,
     ) -> None:
         self._sm = sessionmaker
         self._mentor = mentor
         self._interviewer = interviewer
         self._eval = evaluator
         self._qa = qa
+        self._redis_url = redis_url
+
+    async def _enqueue_qa_generation(
+        self,
+        *,
+        job_name: str,
+        user_id: UUID,
+        target_id: UUID,
+        target_kind: str,
+        position: str,
+        level: str,
+        fallback,
+    ) -> None:
+        queued = False
+        if self._redis_url:
+            queued = await enqueue_arq_job(
+                self._redis_url,
+                job_name,
+                str(user_id),
+                str(target_id),
+                position,
+                level,
+            )
+        log.info(
+            "messenger_qa_generation_enqueued",
+            queued=queued,
+            job_name=job_name,
+            user_id=str(user_id),
+            target_kind=target_kind,
+            target_id=str(target_id),
+            position=position,
+            level=level,
+        )
+        if not queued:
+            import asyncio as _asyncio
+
+            _asyncio.create_task(fallback())
 
     async def resolve_resume_id(
         self, *, user_id: UUID, name_or_id: str | None
@@ -155,42 +198,52 @@ class CoreAgentFacade(AgentFacade):
                 user_id=user_id, mode="mentor", project_id=project_id, title=None
             )
             sid = sess.id
+        set_current_span_attribute("session_id", str(sid))
         opening = "Mentor mode is on. Ask anything about your project."
         return sid, opening
 
     async def send_mentor_message(
         self, *, user_id: UUID, session_id: UUID, content: str
     ) -> str:
-        # Persist user message.
-        async with self._sm() as s:
-            await SqlChatRepository(s).append_message(
-                session_id=session_id, user_id=user_id, role="user", content=content
-            )
-            sess = await SqlChatRepository(s).get_session(
-                user_id=user_id, session_id=session_id
-            )
-            project_id = sess.project_id if sess else None
-
-        # Stream tokens, collapse to final string.
-        chunks: list[str] = []
-        async for ev in self._mentor.stream(
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            user_input=content,
+        with start_span(
+            "messenger.agent_turn",
+            user_id=str(user_id),
+            session_id=str(session_id),
+            mode="mentor",
         ):
-            if ev.get("type") == "token":
-                chunks.append(ev.get("content", ""))
-        full = "".join(chunks).strip() or "(no response)"
+            # Persist user message.
+            async with self._sm() as s:
+                await SqlChatRepository(s).append_message(
+                    session_id=session_id,
+                    user_id=user_id,
+                    role="user",
+                    content=content,
+                )
+                sess = await SqlChatRepository(s).get_session(
+                    user_id=user_id, session_id=session_id
+                )
+                project_id = sess.project_id if sess else None
 
-        async with self._sm() as s:
-            await SqlChatRepository(s).append_message(
-                session_id=session_id,
+            # Stream tokens, collapse to final string.
+            chunks: list[str] = []
+            async for ev in self._mentor.stream(
                 user_id=user_id,
-                role="assistant",
-                content=full,
-            )
-        return full
+                session_id=session_id,
+                project_id=project_id,
+                user_input=content,
+            ):
+                if ev.get("type") == "token":
+                    chunks.append(ev.get("content", ""))
+            full = "".join(chunks).strip() or "(no response)"
+
+            async with self._sm() as s:
+                await SqlChatRepository(s).append_message(
+                    session_id=session_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content=full,
+                )
+            return full
 
     # ---------- interviewer -------------------------------------------------
 
@@ -231,23 +284,45 @@ class CoreAgentFacade(AgentFacade):
             sid = sess.id
             qa_set_id = qa_set.id
             qa_total = qa_set.total
+        set_current_span_attribute("session_id", str(sid))
 
         if qa_total == 0:
+            await self._enqueue_qa_generation(
+                job_name="generate_project_qa",
+                user_id=user_id,
+                target_id=project_id,
+                target_kind="project",
+                position=position,
+                level=level,
+                fallback=lambda: self._qa.run(
+                    user_id=user_id,
+                    project_id=project_id,
+                    position=position,
+                    level=level,
+                ),
+            )
             return (
                 sid,
                 "Generating interview questions for this project — try /status in a few seconds.",
             )
 
-        first = await self._interviewer.turn(
-            user_id=user_id,
-            session_id=sid,
-            qa_set_id=qa_set_id,
-            user_input="",
-            asked_ids=set(),
-            prev_question="",
-            prev_ideal_answer="",
-            thread_state={},
-        )
+        with start_span(
+            "messenger.session_start",
+            user_id=str(user_id),
+            session_id=str(sid),
+            mode="interviewer",
+            scope="project",
+        ):
+            first = await self._interviewer.turn(
+                user_id=user_id,
+                session_id=sid,
+                qa_set_id=qa_set_id,
+                user_input="",
+                asked_ids=set(),
+                prev_question="",
+                prev_ideal_answer="",
+                thread_state={},
+            )
         question = first.get("chosen_question") or "Tell me about this project."
         opening = f"Question 1:\n{question}"
 
@@ -326,17 +401,22 @@ class CoreAgentFacade(AgentFacade):
             sid = sess.id
             qa_set_id = qa_set.id
             qa_total = qa_set.total
+        set_current_span_attribute("session_id", str(sid))
 
         if qa_total == 0:
-            import asyncio as _asyncio
-
-            _asyncio.create_task(
-                self._qa.run_for_resume(
+            await self._enqueue_qa_generation(
+                job_name="generate_resume_qa",
+                user_id=user_id,
+                target_id=resume_id,
+                target_kind="resume",
+                position=position,
+                level=level,
+                fallback=lambda: self._qa.run_for_resume(
                     user_id=user_id,
                     resume_id=resume_id,
                     position=position,
                     level=level,
-                )
+                ),
             )
             return (
                 sid,
@@ -344,17 +424,24 @@ class CoreAgentFacade(AgentFacade):
                 "try /status in a few seconds.",
             )
 
-        first = await self._interviewer.turn(
-            user_id=user_id,
-            session_id=sid,
-            qa_set_id=qa_set_id,
-            user_input="",
-            asked_ids=set(),
-            prev_question="",
-            prev_ideal_answer="",
-            recent_claims=[],
-            thread_state={},
-        )
+        with start_span(
+            "messenger.session_start",
+            user_id=str(user_id),
+            session_id=str(sid),
+            mode="interviewer",
+            scope="resume",
+        ):
+            first = await self._interviewer.turn(
+                user_id=user_id,
+                session_id=sid,
+                qa_set_id=qa_set_id,
+                user_input="",
+                asked_ids=set(),
+                prev_question="",
+                prev_ideal_answer="",
+                recent_claims=[],
+                thread_state={},
+            )
         question = first.get("chosen_question") or "Tell me about a recent project."
         claim = first.get("claim")
         opening = (
@@ -392,6 +479,19 @@ class CoreAgentFacade(AgentFacade):
         return sid, opening
 
     async def send_interview_message(
+        self, *, user_id: UUID, session_id: UUID, content: str
+    ) -> str:
+        with start_span(
+            "messenger.agent_turn",
+            user_id=str(user_id),
+            session_id=str(session_id),
+            mode="interviewer",
+        ):
+            return await self._send_interview_message(
+                user_id=user_id, session_id=session_id, content=content
+            )
+
+    async def _send_interview_message(
         self, *, user_id: UUID, session_id: UUID, content: str
     ) -> str:
         async with self._sm() as s:
@@ -466,6 +566,7 @@ class CoreAgentFacade(AgentFacade):
     async def end_session(
         self, *, user_id: UUID, session_id: UUID, mode: str
     ) -> str:
+        set_current_span_attribute("session_id", str(session_id))
         async with self._sm() as s:
             chat_repo = SqlChatRepository(s)
             sess = await chat_repo.get_session(
@@ -519,9 +620,23 @@ class CoreAgentFacade(AgentFacade):
                 user_id=user_id, mode="general", project_id=None, title=None
             )
             sid = sess.id
+        set_current_span_attribute("session_id", str(sid))
         return sid, "Chat mode is on. Ask anything."
 
     async def send_general_message(
+        self, *, user_id: UUID, session_id: UUID, content: str
+    ) -> str:
+        with start_span(
+            "messenger.agent_turn",
+            user_id=str(user_id),
+            session_id=str(session_id),
+            mode="general",
+        ):
+            return await self._send_general_message(
+                user_id=user_id, session_id=session_id, content=content
+            )
+
+    async def _send_general_message(
         self, *, user_id: UUID, session_id: UUID, content: str
     ) -> str:
         # /chat uses a dedicated streaming entry on MentorAgent that has

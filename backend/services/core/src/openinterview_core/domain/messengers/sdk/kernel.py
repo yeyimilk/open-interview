@@ -78,6 +78,7 @@ class MessengerKernel:
         self._tokens = pair_tokens
         self._dedup = dedup or InMemoryDedup()
         self._filters = filters
+        self._tier_by_recipient: dict[str, str] = {}
         # Default safety net: 1 msg/s per recipient, burst 5, suppress
         # exact repeats within the last 3 sends, ~2k chars per chunk.
         self._guard = delivery_guard or DeliveryGuard(
@@ -100,7 +101,11 @@ class MessengerKernel:
         # loses the rate-limit + repeat-suppression + chunk-pacing
         # protections, so we keep the kernel's own paths funneling here.
         return await self._guard.deliver(
-            plugin, to=to, text=text, idempotency_key=idempotency_key
+            plugin,
+            to=to,
+            text=text,
+            idempotency_key=idempotency_key,
+            tier=self._tier_by_recipient.get(to),
         )
 
     async def handle_turn(
@@ -138,10 +143,10 @@ class MessengerKernel:
             return
 
         link_external = turn.link_external_id or turn.external_user_id
-        user_id = await self._links.resolve(
+        identity = await self._links.resolve_identity(
             channel=turn.channel, external_id=link_external
         )
-        if user_id is None:
+        if identity is None:
             # Unlinked + group → silent. Unlinked + DM → onboarding.
             if not turn.is_group:
                 await self._deliver(
@@ -153,6 +158,8 @@ class MessengerKernel:
                     ),
                 )
             return
+        user_id = identity.user_id
+        self._tier_by_recipient[_reply_to(turn)] = identity.tier
 
         if self._filters is not None:
             flt = await self._filters.load_for_channel_external(

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import UUID
 
@@ -24,12 +26,14 @@ from openinterview_schemas import (
     VoiceAnalysisRequest,
     VoiceAnalysisResponse,
 )
+from openinterview_logging import get_logger
 
 # (user_id, role) -> ProviderOverride | None. The role is one of "chat",
 # "embedding", "transcription", "voice-analysis". The resolver is awaited
 # once per gateway request; it should return None when there's no per-user
 # override.
 OverrideResolver = Callable[[UUID, str], Awaitable["ProviderOverride | None"]]
+log = get_logger(__name__)
 
 
 class GatewayClientError(Exception):
@@ -68,18 +72,47 @@ class GatewayClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
 
-    async def _post(self, path: str, body: dict) -> dict:
+    async def _post(self, path: str, body: dict, *, operation: str = "gateway_post") -> dict:
         url = f"{self._base}{path}"
-        if self._client is not None:
-            r = await self._client.post(url, headers=self._headers(), json=body)
-        else:
-            async with httpx.AsyncClient(timeout=self._timeout) as c:
-                r = await c.post(url, headers=self._headers(), json=body)
-        if r.status_code >= 400:
-            raise GatewayClientError(
-                f"gateway {r.status_code}: {r.text[:500]}", status=r.status_code
+        started = time.perf_counter()
+        user_hash = _hash_id(body.get("user_id"))
+        logical_model = body.get("logical_model")
+        status = 0
+        try:
+            if self._client is not None:
+                r = await self._client.post(url, headers=self._headers(), json=body)
+            else:
+                async with httpx.AsyncClient(timeout=self._timeout) as c:
+                    r = await c.post(url, headers=self._headers(), json=body)
+            status = r.status_code
+            if r.status_code >= 400:
+                raise GatewayClientError(
+                    f"gateway {r.status_code}: {r.text[:500]}", status=r.status_code
+                )
+            return r.json()
+        except Exception as e:
+            log.warning(
+                "gateway_request_failed",
+                operation=operation,
+                path=path,
+                status=status,
+                user_hash=user_hash,
+                logical_model=logical_model,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                error=str(e),
             )
-        return r.json()
+            raise
+        finally:
+            if status and status < 400:
+                log.info(
+                    "gateway_request",
+                    operation=operation,
+                    path=path,
+                    status=status,
+                    user_hash=user_hash,
+                    logical_model=logical_model,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
 
     async def chat(
         self,
@@ -102,7 +135,11 @@ class GatewayClient:
             tool_choice=tool_choice,
             override=await self._resolve_override(user_id, "chat"),
         )
-        data = await self._post("/v1/chat/completions", req.model_dump(mode="json"))
+        data = await self._post(
+            "/v1/chat/completions",
+            req.model_dump(mode="json"),
+            operation="chat",
+        )
         return ChatCompletionResponse.model_validate(data)
 
     async def transcribe(
@@ -123,7 +160,9 @@ class GatewayClient:
             override=await self._resolve_override(user_id, "transcription"),
         )
         data = await self._post(
-            "/v1/audio/transcribe", req.model_dump(mode="json")
+            "/v1/audio/transcribe",
+            req.model_dump(mode="json"),
+            operation="transcribe",
         )
         return TranscriptionResponse.model_validate(data)
 
@@ -147,7 +186,9 @@ class GatewayClient:
             override=await self._resolve_override(user_id, "voice-analysis"),
         )
         data = await self._post(
-            "/v1/audio/analyze", req.model_dump(mode="json")
+            "/v1/audio/analyze",
+            req.model_dump(mode="json"),
+            operation="analyze_voice",
         )
         return VoiceAnalysisResponse.model_validate(data)
 
@@ -164,7 +205,11 @@ class GatewayClient:
             inputs=inputs,
             override=await self._resolve_override(user_id, "embedding"),
         )
-        data = await self._post("/v1/embeddings", req.model_dump(mode="json"))
+        data = await self._post(
+            "/v1/embeddings",
+            req.model_dump(mode="json"),
+            operation="embed",
+        )
         return EmbeddingResponse.model_validate(data)
 
     async def chat_stream(
@@ -195,13 +240,17 @@ class GatewayClient:
         )
         url = f"{self._base}/v1/chat/completions/stream"
         body = req.model_dump(mode="json")
+        started = time.perf_counter()
+        user_hash = _hash_id(user_id)
+        status = 0
         emitted = False
 
         async def _consume(client: httpx.AsyncClient) -> AsyncIterator[str]:
-            nonlocal emitted
+            nonlocal emitted, status
             async with client.stream(
                 "POST", url, headers=self._headers(), json=body
             ) as r:
+                status = r.status_code
                 if r.status_code == 404:
                     # gateway has no stream endpoint -- fall back below
                     return
@@ -245,9 +294,28 @@ class GatewayClient:
                 async with httpx.AsyncClient(timeout=self._timeout) as c:
                     async for piece in _consume(c):
                         yield piece
-        except GatewayClientError:
+        except Exception as e:
+            log.warning(
+                "gateway_stream_failed",
+                operation="chat_stream",
+                path="/v1/chat/completions/stream",
+                status=getattr(e, "status", status),
+                user_hash=user_hash,
+                logical_model=logical_model,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                error=str(e),
+            )
             raise
         if emitted:
+            log.info(
+                "gateway_stream",
+                operation="chat_stream",
+                path="/v1/chat/completions/stream",
+                status=status,
+                user_hash=user_hash,
+                logical_model=logical_model,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
             return
 
         # Fallback: non-streaming
@@ -296,7 +364,9 @@ class GatewayClient:
             model_id=model_id,
         )
         data = await self._post(
-            "/v1/providers/test", req.model_dump(mode="json")
+            "/v1/providers/test",
+            req.model_dump(mode="json"),
+            operation="test_provider",
         )
         return ProviderTestResponse.model_validate(data)
 
@@ -315,3 +385,9 @@ def _parse_sse_block(block: str) -> tuple[str, object] | None:
         return name, json.loads(data)
     except Exception:
         return name, data
+
+
+def _hash_id(value: object) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(str(value).encode()).hexdigest()[:10]

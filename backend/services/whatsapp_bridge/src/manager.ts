@@ -251,6 +251,14 @@ export class AccountManager {
     }));
   }
 
+  stats(): { accounts: number; pairs: number; connected: number } {
+    return {
+      accounts: this.accounts.size,
+      pairs: this.pairs.size,
+      connected: this.drivers.size,
+    };
+  }
+
   async logout(account_id: string): Promise<boolean> {
     const driver = this.drivers.get(account_id);
     if (driver) {

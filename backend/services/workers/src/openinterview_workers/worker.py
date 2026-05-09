@@ -74,6 +74,46 @@ async def _kb_service():
     return db, svc
 
 
+async def _qa_service():
+    from openinterview_core.config import Settings
+    from openinterview_core.domain.qa import QAGenerationService
+    from openinterview_core.domain.retrieval import InProcessRetrievalService
+    from openinterview_core.infra.blob import build_blob_storage
+    from openinterview_core.infra.db import Database
+    from openinterview_core.infra.gateway_client import GatewayClient
+    from openinterview_core.infra.vector import ChromaVectorStore, InMemoryVectorStore
+
+    settings = Settings()  # type: ignore[call-arg]
+    db = Database(settings.database_url)
+    blob = build_blob_storage(settings)
+    gateway = GatewayClient(
+        base_url=settings.gateway_url,
+        service_token=settings.gateway_service_token,
+    )
+    vector_store = InMemoryVectorStore()
+    try:
+        vector_store = ChromaVectorStore(settings.chroma_url)
+    except Exception as e:  # noqa: BLE001
+        log.warning("worker_vector_store_fallback_inmemory", error=str(e))
+
+    class _RetrievalService:
+        async def retrieve(self, request):
+            service = InProcessRetrievalService(
+                sessionmaker=db.sessionmaker,
+                gateway=gateway,
+                vector_store=vector_store,
+            )
+            return await service.retrieve(request)
+
+    svc = QAGenerationService(
+        sessionmaker=db.sessionmaker,
+        gateway=gateway,
+        vector_store=vector_store,
+        retrieval_service=_RetrievalService(),
+    )
+    return db, blob, svc
+
+
 async def process_common_kb_document(ctx: dict, document_id: str, actor_user_id: str | None = None) -> int:
     db, svc = await _kb_service()
     try:
@@ -122,6 +162,46 @@ async def rebuild_company_interview_profiles(ctx: dict, company_key: str | None 
         await db.dispose()
 
 
+async def generate_project_qa(
+    ctx: dict,
+    user_id: str,
+    project_id: str,
+    position: str,
+    level: str,
+) -> str:
+    db, _blob, svc = await _qa_service()
+    try:
+        await svc.run(
+            user_id=UUID(user_id),
+            project_id=UUID(project_id),
+            position=position,
+            level=level,
+        )
+        return "ok"
+    finally:
+        await db.dispose()
+
+
+async def generate_resume_qa(
+    ctx: dict,
+    user_id: str,
+    resume_id: str,
+    position: str,
+    level: str,
+) -> str:
+    db, _blob, svc = await _qa_service()
+    try:
+        await svc.run_for_resume(
+            user_id=UUID(user_id),
+            resume_id=UUID(resume_id),
+            position=position,
+            level=level,
+        )
+        return "ok"
+    finally:
+        await db.dispose()
+
+
 class WorkerSettings:
     redis_settings = _redis_settings_from_env()
     max_jobs = int(os.getenv("ARQ_MAX_JOBS", "3"))
@@ -133,6 +213,8 @@ class WorkerSettings:
         extract_common_kb_items,
         embed_common_kb_items,
         rebuild_company_interview_profiles,
+        generate_project_qa,
+        generate_resume_qa,
     ]
 
 

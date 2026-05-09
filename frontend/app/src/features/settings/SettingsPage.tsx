@@ -3,6 +3,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  Download,
   Eye,
   EyeOff,
   KeyRound,
@@ -1811,6 +1812,50 @@ function AppearanceSection() {
 // ---------- Data & privacy ----------
 
 function DataSection() {
+  const [exporting, setExporting] = useState(false);
+  const [wiping, setWiping] = useState(false);
+  const { logout } = useAuth();
+
+  async function exportData() {
+    setExporting(true);
+    try {
+      const { blob, filename } = await api.exportMyData();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      toast.error("Export failed", { description: (e as Error).message });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function wipeData() {
+    const first = confirm(
+      "This permanently deletes your projects, resumes, sessions, memory, messaging links, and provider keys. Your login account remains."
+    );
+    if (!first) return;
+    const confirmation = prompt('Type "WIPE" to confirm.');
+    if (confirmation !== "WIPE") return;
+    setWiping(true);
+    try {
+      await api.wipeMyData();
+      toast.success("Data wiped", {
+        description: "Your account remains, but workspace data was removed.",
+      });
+      logout();
+    } catch (e) {
+      toast.error("Wipe failed", { description: (e as Error).message });
+    } finally {
+      setWiping(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Card>
@@ -1822,8 +1867,13 @@ function DataSection() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Button variant="outline" disabled>
-            Export everything (coming soon)
+          <Button variant="outline" onClick={exportData} disabled={exporting}>
+            {exporting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            Export everything
           </Button>
         </CardContent>
       </Card>
@@ -1836,8 +1886,13 @@ function DataSection() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Button variant="destructive" disabled>
-            <Trash2 className="h-4 w-4" /> Wipe my data (coming soon)
+          <Button variant="destructive" onClick={wipeData} disabled={wiping}>
+            {wiping ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Trash2 className="h-4 w-4" />
+            )}
+            Wipe my data
           </Button>
         </CardContent>
       </Card>

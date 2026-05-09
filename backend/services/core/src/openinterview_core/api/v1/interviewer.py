@@ -25,6 +25,7 @@ from ...infra.db import get_session_dep
 from ...infra.db.chat_repository import SqlChatRepository
 from ...infra.db.qa_repository import SqlQARepository
 from ...infra.db.resume_repository import SqlResumeRepository
+from ...infra.jobs import enqueue_arq_job
 from ..deps import get_current_user
 from ..sse import sse_format
 
@@ -69,6 +70,16 @@ def _qa_service(request: Request) -> QAGenerationService:
     )
 
 
+async def _enqueue_qa_or_fallback(request: Request, fallback, job_name: str, *args) -> None:
+    queued = await enqueue_arq_job(
+        request.app.state.settings.redis_url,
+        job_name,
+        *[str(arg) for arg in args],
+    )
+    if not queued:
+        fallback()
+
+
 @router.post("/sessions", response_model=ChatSessionOut)
 async def create_session(
     body: CreateInterviewerSessionRequest,
@@ -95,13 +106,21 @@ async def create_session(
             level=body.level,
         )
         if qa_set.total == 0 and qa_set.status in ("pending", "failed"):
-            _asyncio.create_task(
-                svc.run_for_resume(
-                    user_id=user.id,
-                    resume_id=body.resume_id,
-                    position=body.position,
-                    level=body.level,
-                )
+            await _enqueue_qa_or_fallback(
+                request,
+                lambda: _asyncio.create_task(
+                    svc.run_for_resume(
+                        user_id=user.id,
+                        resume_id=body.resume_id,
+                        position=body.position,
+                        level=body.level,
+                    )
+                ),
+                "generate_resume_qa",
+                user.id,
+                body.resume_id,
+                body.position,
+                body.level,
             )
         # Trim filename for a clean title.
         fname = (resume.original_filename or "resume").rsplit(".", 1)[0][:40]
@@ -122,13 +141,21 @@ async def create_session(
             level=body.level,
         )
         if qa_set.total == 0 and qa_set.status in ("pending", "failed"):
-            _asyncio.create_task(
-                svc.run(
-                    user_id=user.id,
-                    project_id=body.project_id,
-                    position=body.position,
-                    level=body.level,
-                )
+            await _enqueue_qa_or_fallback(
+                request,
+                lambda: _asyncio.create_task(
+                    svc.run(
+                        user_id=user.id,
+                        project_id=body.project_id,
+                        position=body.position,
+                        level=body.level,
+                    )
+                ),
+                "generate_project_qa",
+                user.id,
+                body.project_id,
+                body.position,
+                body.level,
             )
         target_label = ""
         target_extra = {"scope": "project"}

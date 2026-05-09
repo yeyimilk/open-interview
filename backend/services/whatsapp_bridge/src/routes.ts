@@ -20,7 +20,10 @@ export function registerRoutes(app: FastifyInstance, deps: Deps): void {
     }
   });
 
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async () => ({
+    ok: true,
+    ...deps.manager.stats(),
+  }));
 
   app.post("/pair", async () => {
     const session = await deps.manager.startPair();

@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openinterview_db import User
+from openinterview_logging import get_logger
 from openinterview_schemas import (
     GenerateQARequest,
     GenerateQAResponse,
@@ -18,9 +19,11 @@ from openinterview_schemas import (
 from ...domain.qa import QAGenerationService
 from ...infra.db import get_session_dep
 from ...infra.db.qa_repository import SqlQARepository
+from ...infra.jobs import enqueue_arq_job
 from ..deps import get_current_user
 
 router = APIRouter(tags=["qa"])
+log = get_logger(__name__)
 
 
 def _service(request: Request) -> QAGenerationService:
@@ -45,6 +48,84 @@ async def _safe_run_for_resume(svc: QAGenerationService, **kwargs) -> None:
         await svc.run_for_resume(**kwargs)
     except Exception:
         pass
+
+
+async def _enqueue_project_qa_or_fallback(
+    *,
+    request: Request,
+    background: BackgroundTasks,
+    svc: QAGenerationService,
+    user_id: UUID,
+    project_id: UUID,
+    position: str,
+    level: str,
+) -> None:
+    settings = request.app.state.settings
+    queued = await enqueue_arq_job(
+        settings.redis_url,
+        "generate_project_qa",
+        str(user_id),
+        str(project_id),
+        position,
+        level,
+    )
+    log.info(
+        "qa_generation_enqueued",
+        queued=queued,
+        scope="project",
+        user_id=str(user_id),
+        project_id=str(project_id),
+        position=position,
+        level=level,
+    )
+    if not queued:
+        background.add_task(
+            _safe_run,
+            svc,
+            user_id=user_id,
+            project_id=project_id,
+            position=position,
+            level=level,
+        )
+
+
+async def _enqueue_resume_qa_or_fallback(
+    *,
+    request: Request,
+    background: BackgroundTasks,
+    svc: QAGenerationService,
+    user_id: UUID,
+    resume_id: UUID,
+    position: str,
+    level: str,
+) -> None:
+    settings = request.app.state.settings
+    queued = await enqueue_arq_job(
+        settings.redis_url,
+        "generate_resume_qa",
+        str(user_id),
+        str(resume_id),
+        position,
+        level,
+    )
+    log.info(
+        "qa_generation_enqueued",
+        queued=queued,
+        scope="resume",
+        user_id=str(user_id),
+        resume_id=str(resume_id),
+        position=position,
+        level=level,
+    )
+    if not queued:
+        background.add_task(
+            _safe_run_for_resume,
+            svc,
+            user_id=user_id,
+            resume_id=resume_id,
+            position=position,
+            level=level,
+        )
 
 
 @router.post(
@@ -73,9 +154,10 @@ async def generate_qa(
 
     svc = _service(request)
     for level in body.levels:
-        background.add_task(
-            _safe_run,
-            svc,
+        await _enqueue_project_qa_or_fallback(
+            request=request,
+            background=background,
+            svc=svc,
             user_id=user.id,
             project_id=project_id,
             position=body.position,
@@ -177,9 +259,10 @@ async def regenerate_qa_set(
     if qa_set.scope == "resume":
         if qa_set.resume_id is None:
             raise HTTPException(status_code=400, detail="qa set missing resume_id")
-        background.add_task(
-            _safe_run_for_resume,
-            svc,
+        await _enqueue_resume_qa_or_fallback(
+            request=request,
+            background=background,
+            svc=svc,
             user_id=user.id,
             resume_id=qa_set.resume_id,
             position=qa_set.position,
@@ -188,9 +271,10 @@ async def regenerate_qa_set(
     else:
         if qa_set.project_id is None:
             raise HTTPException(status_code=400, detail="qa set missing project_id")
-        background.add_task(
-            _safe_run,
-            svc,
+        await _enqueue_project_qa_or_fallback(
+            request=request,
+            background=background,
+            svc=svc,
             user_id=user.id,
             project_id=qa_set.project_id,
             position=qa_set.position,

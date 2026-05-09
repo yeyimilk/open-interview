@@ -4,12 +4,13 @@ per-conversation active mentor/interviewer chat session.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from openinterview_db import MessengerActiveSession, MessengerFilter, MessengerLink
+from openinterview_db import MessengerActiveSession, MessengerFilter, MessengerLink, User
 
 
 def _whatsapp_phone_prefix_pattern(jid: str) -> str | None:
@@ -78,6 +79,12 @@ class MessengerLinkStore:
         return row
 
     async def resolve(self, *, channel: str, external_id: str) -> UUID | None:
+        identity = await self.resolve_identity(channel=channel, external_id=external_id)
+        return identity.user_id if identity is not None else None
+
+    async def resolve_identity(
+        self, *, channel: str, external_id: str
+    ) -> "ResolvedMessengerIdentity | None":
         async with self._sm() as s:
             row = (
                 await s.execute(
@@ -106,8 +113,12 @@ class MessengerLinkStore:
             if row is None:
                 return None
             row.last_seen_at = datetime.now(timezone.utc)
+            user = await s.get(User, row.user_id)
             await s.commit()
-            return row.user_id
+            return ResolvedMessengerIdentity(
+                user_id=row.user_id,
+                tier=getattr(user, "tier", None) or "free",
+            )
 
     async def list_for_user(self, *, user_id: UUID) -> list[MessengerLink]:
         async with self._sm() as s:
@@ -127,6 +138,12 @@ class MessengerLinkStore:
             await s.delete(row)
             await s.commit()
         return True
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedMessengerIdentity:
+    user_id: UUID
+    tier: str
 
 
 class ActiveSessionStore:

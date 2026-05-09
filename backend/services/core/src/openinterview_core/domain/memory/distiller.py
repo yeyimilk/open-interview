@@ -5,15 +5,20 @@
 from __future__ import annotations
 
 import json
+import time
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from openinterview_logging import get_logger
 from openinterview_schemas import ChatMessage as ChatMessageDTO
 
 from ...infra.db.chat_repository import SqlChatRepository
 from ...infra.db.memory_repository import SqlMemoryRepository
+from ...infra.tracing import set_current_span_attribute, start_span
 from .recall import MemoryRetriever
+
+log = get_logger(__name__)
 
 
 class MemoryDistiller:
@@ -31,11 +36,37 @@ class MemoryDistiller:
         self._model = logical_model
 
     async def distill(self, *, user_id: UUID, session_id: UUID) -> None:
+        started = time.perf_counter()
+        with start_span(
+            "memory.distill",
+            user_id=str(user_id),
+            session_id=str(session_id),
+            logical_model=self._model,
+        ):
+            await self._distill(user_id=user_id, session_id=session_id, started=started)
+
+    async def _distill(
+        self, *, user_id: UUID, session_id: UUID, started: float
+    ) -> None:
+        log.info(
+            "memory_distill_started",
+            user_id=str(user_id),
+            session_id=str(session_id),
+            logical_model=self._model,
+        )
         async with self._sm() as s:
             msgs = await SqlChatRepository(s).list_messages(
                 user_id=user_id, session_id=session_id
             )
+        set_current_span_attribute("message_count", len(msgs))
         if not msgs:
+            log.info(
+                "memory_distill_skipped",
+                user_id=str(user_id),
+                session_id=str(session_id),
+                reason="no_messages",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
             return
         transcript = "\n".join(f"{m.role.upper()}: {m.content}" for m in msgs)
         prompt = (
@@ -57,7 +88,14 @@ class MemoryDistiller:
                 messages=[ChatMessageDTO(role="user", content=prompt)],
             )
             data = _safe_json(r.content, default={})
-        except Exception:
+        except Exception as e:
+            log.warning(
+                "memory_distill_gateway_failed",
+                user_id=str(user_id),
+                session_id=str(session_id),
+                error=str(e),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
             return
 
         ep_summary = str(data.get("episodic_summary") or "").strip()
@@ -96,6 +134,15 @@ class MemoryDistiller:
                 items=items,
                 source_session_id=session_id,
             )
+        log.info(
+            "memory_distill_completed",
+            user_id=str(user_id),
+            session_id=str(session_id),
+            message_count=len(msgs),
+            episodic_saved=bool(ep_summary),
+            long_term_count=len(items),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
 
 
 def _safe_json(text: str, *, default):

@@ -144,6 +144,21 @@ class WhatsAppPlugin(MessengerPlugin):
             raise RuntimeError(r.json().get("error", f"http {r.status_code}"))
         return r.json().get("group", {})
 
+    async def health(self) -> dict[str, Any]:
+        r = await self._http.get(
+            f"{self._bridge}/health",
+            headers=self._auth_headers(),
+            timeout=5.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return {
+            "bridge_url": self._bridge,
+            "accounts": data.get("accounts", 0),
+            "pairs": data.get("pairs", 0),
+            "connected": data.get("connected", 0),
+        }
+
     # ----- inbound (webhook from bridge) ----------------------------------
 
     def webhook_router(self) -> APIRouter:

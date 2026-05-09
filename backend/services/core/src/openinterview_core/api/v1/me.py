@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openinterview_db import User
 from openinterview_schemas import InterviewPreferenceIn, InterviewPreferenceOut, UserOut
 
+from ...domain.users import DataPortabilityService
 from ...infra.db import get_session_dep
 from ...infra.db.common_kb_repository import SqlCommonKBRepository
 from ..deps import get_current_user
 
 router = APIRouter(prefix="/me", tags=["me"])
+
+
+class WipeDataRequest(BaseModel):
+    confirmation: str
 
 
 @router.get("", response_model=UserOut)
@@ -23,6 +32,45 @@ async def whoami(user: User = Depends(get_current_user)) -> UserOut:
         is_admin=user.is_admin,
         created_at=user.created_at,
     )
+
+
+@router.get("/export")
+async def export_my_data(
+    request: Request,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> Response:
+    data = await DataPortabilityService(
+        session=session,
+        blob=request.app.state.blob,
+        vector_store=request.app.state.vector_store,
+    ).export_user_zip(user_id=user.id)
+    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    filename = f"open-interview-export-{stamp}.zip"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/wipe")
+async def wipe_my_data(
+    body: WipeDataRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session_dep),
+) -> dict:
+    if body.confirmation != "WIPE":
+        raise HTTPException(status_code=400, detail="confirmation must be WIPE")
+    return await DataPortabilityService(
+        session=session,
+        blob=request.app.state.blob,
+        vector_store=request.app.state.vector_store,
+    ).wipe_user_data(user_id=user.id)
 
 
 @router.get("/interview-preferences", response_model=InterviewPreferenceOut)

@@ -62,6 +62,7 @@ def build_messenger_runtime(app) -> tuple[MessengerKernel, PluginRegistry]:
         interviewer=interviewer,
         evaluator=evaluator,
         qa=qa,
+        redis_url=app.state.settings.redis_url,
     )
     kernel = MessengerKernel(
         agent=facade,

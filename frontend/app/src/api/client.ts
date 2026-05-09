@@ -440,6 +440,28 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
   me: () => request<UserOut>("/me"),
+  exportMyData: async (): Promise<{ blob: Blob; filename: string }> => {
+    let res = await rawFetch("/me/export", { isJson: false });
+    if (res.status === 401) {
+      const refreshed = await tryRefresh();
+      if (refreshed) res = await rawFetch("/me/export", { isJson: false });
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new HttpError(res.status, text || `HTTP ${res.status}`);
+    }
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = /filename="?([^";]+)"?/i.exec(cd);
+    return {
+      blob: await res.blob(),
+      filename: m?.[1] ?? "open-interview-export.zip",
+    };
+  },
+  wipeMyData: () =>
+    request<{ status: string; deleted: Record<string, number> }>("/me/wipe", {
+      method: "POST",
+      body: JSON.stringify({ confirmation: "WIPE" }),
+    }),
 
   // admin users
   adminListUsers: () => request<UserOut[]>("/admin/users"),

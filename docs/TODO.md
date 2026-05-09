@@ -272,18 +272,39 @@ Remaining follow-ups:
 
 ## 5. Hardening / ops
 
-- **Observability**: structured logging for messenger turns, gateway
-  calls per session, distiller runs. Tracing via OpenTelemetry — at
-  minimum a session-id span.
-- **Export / wipe**: per-user "download all my data" zip; "wipe
-  everything except auth row" button.
-- **Real arq offload**: today QA generation runs in-process; move it
-  to a worker so the API never blocks on long generations.
-- **Rate-limit profiles**: per-tier outbound chunk pacing for the
-  delivery guard. Free tier = slower, paid = burst higher.
-- **Health endpoints** for the WhatsApp bridge integrated into the
-  core's `/healthz` so docker-compose health checks cover the whole
-  stack.
+- **Observability** ✅ first slice done: gateway calls now emit structured
+  success/failure logs with operation, model, status, user hash, and latency;
+  streaming gateway calls log separately; memory distillation logs start,
+  skip, failure, and completion events; messenger agent turns/session starts
+  create optional OpenTelemetry spans carrying `session_id` when OTel is
+  installed.
+- **Export / wipe** ✅ first slice done: `/me/export` returns a per-user zip
+  with relational data plus user blobs, while redacting password hashes,
+  encrypted provider keys, and pair token hashes. `/me/wipe` deletes workspace
+  data, messaging links, memories, QA, provider keys, vectors, and blobs while
+  preserving the auth row; Settings exposes export and confirmed wipe actions.
+- **Real arq offload** ✅ first slice done: project and resume QA generation
+  can now run as worker jobs, with API and messenger startup paths enqueueing
+  `generate_project_qa` / `generate_resume_qa` and falling back to background
+  in-process work only when Redis enqueue fails.
+- **Rate-limit profiles** ✅ first slice done: delivery guard supports
+  per-tier profiles. Free tier is paced more slowly; pro/team get larger
+  bursts and faster chunk pacing, while explicit guard settings still work for
+  tests and custom runtimes.
+- **Health endpoints** ✅ first slice done: WhatsApp bridge exposes `/health`
+  with account/pair/connected stats; core `/healthz` and `/readyz` include DB
+  and WhatsApp bridge status.
+
+Remaining follow-ups:
+- Add full OpenTelemetry exporter/config wiring and propagate request/session
+  trace context across core, gateway, worker, and bridge boundaries.
+- Add API-level tests for `/me/export`, `/me/wipe`, and `/healthz` auth/status
+  wiring; service-level export redaction and wipe-preserves-auth coverage is
+  in place.
+- Add retry/backoff/dead-letter handling and user-visible status for failed
+  arq QA jobs.
+- Add config-driven tier profiles if product tiers need runtime tuning without
+  deploys.
 
 ---
 
