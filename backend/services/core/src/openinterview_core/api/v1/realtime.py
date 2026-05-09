@@ -124,6 +124,8 @@ async def internal_interviewer_turn(
     prev_q = str(target.get("current_question") or "")
     prev_a = str(target.get("current_ideal_answer") or "")
     recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
+    blueprint = target.get("blueprint") if isinstance(target.get("blueprint"), dict) else None
+    thread_state = target.get("thread_state") if isinstance(target.get("thread_state"), dict) else {}
 
     transcript = (body.transcript or "").strip()
     if not transcript:
@@ -154,7 +156,9 @@ async def internal_interviewer_turn(
                 prev_question=prev_q,
                 prev_ideal_answer=prev_a,
                 recent_claims=recent_claims,
+                blueprint=blueprint,
                 voice_features=voice or None,
+                thread_state=thread_state,
             ):
                 kind = ev.get("type", "message")
                 if kind == "token":
@@ -178,6 +182,9 @@ async def internal_interviewer_turn(
                     meta={
                         "evaluation": meta.get("evaluation"),
                         "channel": "live",
+                        "next_action": meta.get("next_action"),
+                        "follow_up_axis": meta.get("follow_up_axis"),
+                        "thread_state": meta.get("thread_state"),
                     },
                 )
                 row = await rrepo.get_session(
@@ -196,6 +203,9 @@ async def internal_interviewer_turn(
                     )
                     new_target["current_ideal_answer"] = meta.get(
                         "ideal_answer", ""
+                    )
+                    new_target["thread_state"] = meta.get(
+                        "thread_state", new_target.get("thread_state", {})
                     )
                     row.target = new_target
                 await s.commit()

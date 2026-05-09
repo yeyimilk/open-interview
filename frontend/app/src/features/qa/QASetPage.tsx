@@ -68,6 +68,12 @@ export function QASetPage() {
   for (const it of set.items) {
     (byCat[it.category] = byCat[it.category] || []).push(it);
   }
+  const targetLink =
+    set.scope === "resume" && set.resume_id
+      ? { to: `/resumes/${set.resume_id}`, label: "Resume" }
+      : set.project_id
+        ? { to: `/projects/${set.project_id}`, label: "Project" }
+        : null;
 
   return (
     <div>
@@ -83,11 +89,13 @@ export function QASetPage() {
         actions={
           <>
             <StatusPill status={set.status} />
-            <Button asChild variant="outline">
-              <Link to={`/projects/${set.project_id}`}>
-                <ArrowLeft className="h-4 w-4" /> Project
-              </Link>
-            </Button>
+            {targetLink && (
+              <Button asChild variant="outline">
+                <Link to={targetLink.to}>
+                  <ArrowLeft className="h-4 w-4" /> {targetLink.label}
+                </Link>
+              </Button>
+            )}
             <Button variant="outline" onClick={regenerate}>
               <RefreshCw className="h-4 w-4" /> Regenerate
             </Button>
@@ -157,6 +165,15 @@ export function QASetPage() {
                           </Badge>
                         ))}
                       </div>
+                      {it.follow_up_axes.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          {it.follow_up_axes.map((axis) => (
+                            <Badge key={axis} variant="outline">
+                              {axis.replace(/_/g, " ")}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
                     </AccordionContent>
                   </AccordionItem>
                 ))}

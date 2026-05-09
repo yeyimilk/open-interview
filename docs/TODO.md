@@ -215,86 +215,58 @@ to project X").
 
 ## 4. Interview intelligence
 
-### 4.1 Standalone question-set generation boundary  ⏱ large
+### 4.1 Standalone question-set generation boundary  ✅ first slice done
 
-**Problem.** Question/test-set generation is already more than a simple
-helper: it plans topic coverage, retrieves grounding material, runs sharded
-generation, merges/dedupes, persists QA sets, and may soon generate multiple
-types of interview assets. Keeping this logic buried inside Core will make it
-hard to add richer test sets, regenerate slices, compare quality, or retry
-long-running work safely.
+Core now has an in-process `QuestionSetService` boundary under
+`openinterview_core/domain/question_sets/`. `QAGenerationService` remains as a
+compatibility facade for older API, ingestion, and messenger call sites.
 
-**Target shape.** Extract a `QuestionSetService` boundary that owns the full
-question/test-set lifecycle:
-- Inputs: project, resume, target role/level, company style, selected skills,
-  requested interview format, and generation constraints.
-- Planning: coverage matrix by topic, depth, difficulty, project/resume
-  evidence requirements, behavioral/system-design/Applied-AI allocation.
-- Generation jobs: sharded generation, retry/resume, temp artifacts,
-  partial-result visibility, merge/dedupe.
-- Outputs: canonical question set, ideal answer outline, evidence/citations,
-  rubric, expected follow-up dimensions, and quality metadata.
-- Evaluation: offline quality checks, duplicate detection, grounding coverage,
-  and user feedback/flagging loop.
+Implemented responsibilities:
+- Project-scoped and resume-scoped request/response DTOs.
+- QA-set lifecycle: get/create set, clear retry errors, mark `running`, run
+  bounded shard generation, merge/dedupe, persist canonical items, mark
+  `ready` or `failed`.
+- Project and resume generators now request and persist canonical
+  `follow_up_axes` on each item.
+- QA responses expose nullable `project_id`, `resume_id`, `scope`, and item
+  `follow_up_axes`.
+- Regeneration branches correctly by `qa_set.scope`.
+- Focused tests cover project/resume generation, all-shards failure, retry
+  error clearing, merge behavior, and axis normalization.
 
-**First slice.**
-- Keep the service in-process but move orchestration out of `QAGenerationService`
-  into a narrower application boundary with explicit request/response DTOs.
-- Preserve existing project-scoped and resume-scoped QA APIs.
-- Add one richer output field to each generated item: `follow_up_axes`
-  (for example: implementation details, trade-offs, scale, debugging,
-  ownership, failure modes).
-- Add job-state tests for resume/project generation, retry after shard failure,
-  and deterministic merge.
-
-**Later split candidates.**
+Remaining follow-ups:
 - Worker-only deployable for long generation jobs.
 - Dedicated storage for generation artifacts and eval reports.
 - Admin UI for question-set quality review and regeneration.
 
-### 4.2 Threaded mock interview flow with deeper follow-ups  ⏱ large
+### 4.2 Threaded mock interview flow with deeper follow-ups  ✅ first slice done
 
-**Problem.** The current mock interviewer mostly picks one question from a
-bank, evaluates the answer, then moves to another bank question. That is useful
-for practice, but it does not feel like a real interview. Real interviewers
-usually start with a simple project overview question, identify an interesting
-area, and then drill down with follow-ups on design choices, implementation
-details, trade-offs, bugs, scale, and ownership before changing topics.
+The mock interviewer now maintains a per-session `thread_state` and uses a
+small policy module to decide whether the next turn should stay on the current
+topic or move to a new seed question.
 
-**Target behavior.**
-- Start each project/resume thread with a lightweight opener:
-  "Tell me about X" or "What was your role in X?"
-- Maintain an interview thread state: current project/claim/topic, depth,
-  answer quality, uncovered follow-up axes, and when to move on.
-- Prefer depth-first follow-ups for 2-4 turns when the candidate gives enough
-  material, instead of always advancing to a new question.
-- Ask progressively deeper questions:
-  overview → architecture/design → implementation details → trade-offs →
-  failure modes/debugging → scale/metrics → reflection.
-- Fall back to a new topic when the candidate cannot answer, has already
-  covered the axis well, or the configured depth/time budget is exhausted.
-- Use the existing evaluation to decide whether the next turn should be a
-  clarification, a deeper probe, a challenge, or a topic switch.
+Implemented behavior:
+- Explicit policy actions: `ask_opener`, `ask_follow_up`, `challenge_claim`,
+  `switch_topic`, and `wrap_up`.
+- `chat_sessions.target.thread_state` tracks the current seed item, category,
+  claim/topic, answer depth, used axes, remaining axes, last action, and last
+  axis.
+- `n_questions` now caps seed topics; follow-ups are separately bounded by the
+  topic depth budget.
+- Strong answers with remaining axes trigger deeper follow-ups; shallow early
+  answers trigger `challenge_claim`; exhausted axes/depth switch topics or wrap.
+- Text, audio, realtime, and messenger interview paths all read/write the same
+  thread state.
+- Assistant metadata persists `next_action`, `follow_up_axis`, and
+  `thread_state`; final evaluation receives coverage events for breadth/depth.
+- Tests cover strong-answer follow-up, shallow-answer challenge, depth budget,
+  state persistence through session target, and policy unit decisions.
 
-**Implementation notes.**
-- Do not hard-code follow-ups as text appended after every answer. Model this
-  as an interview policy/planner that emits the next action:
-  `ask_opener`, `ask_follow_up`, `challenge_claim`, `switch_topic`,
-  `wrap_up`.
-- Persist thread state in the interviewer session target so reconnects and
-  live-audio turns keep context.
-- Let generated question sets provide `follow_up_axes`; the interviewer policy
-  chooses from those axes at runtime based on the answer.
-- Add a UI indicator for "follow-up" vs "new topic" only if it helps users
-  understand the flow; do not make it feel scripted.
-
-**Acceptance tests.**
-- A strong answer to a project opener triggers a deeper project follow-up,
-  not an unrelated bank question.
-- A shallow answer triggers a clarification or easier probe before switching.
-- After the configured depth budget, the interviewer moves to a new topic.
-- Follow-up state survives refresh/reconnect.
-- End-of-session evaluation can summarize both breadth and depth coverage.
+Remaining follow-ups:
+- Optional UI affordance for "follow-up" vs "new topic" if user testing shows
+  it helps.
+- Quality review of generated follow-up prompts across more company/level
+  styles.
 
 ---
 

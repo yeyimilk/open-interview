@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from openinterview_db import QAItem as QAItemModel
 from openinterview_db import QASet
 
+_UNSET = object()
+
 
 class SqlQARepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -86,13 +88,13 @@ class SqlQARepository:
         return list((await self._s.execute(q)).scalars())
 
     async def set_status(
-        self, *, qa_set_id: UUID, status: str, error: str | None = None
+        self, *, qa_set_id: UUID, status: str, error: str | None | object = _UNSET
     ) -> None:
         row = await self._s.get(QASet, qa_set_id)
         if not row:
             return
         row.status = status
-        if error is not None:
+        if error is not _UNSET:
             row.error = error
         await self._s.commit()
 
@@ -123,6 +125,7 @@ class SqlQARepository:
                     ],
                     difficulty=it.difficulty,
                     tags=it.tags,
+                    follow_up_axes=getattr(it, "follow_up_axes", None) or [],
                     meta=getattr(it, "meta", None),
                 )
             )

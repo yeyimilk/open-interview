@@ -85,6 +85,31 @@ class FakeGateway:
             yield text[i : i + step]
 
 
+class FollowUpGateway(FakeGateway):
+    async def chat(self, *, user_id, logical_model, messages, **kwargs):
+        prompt = messages[-1].content if messages else ""
+        if "evaluating a candidate" in prompt.lower():
+            score = 2 if "too vague" in prompt.lower() else 4
+            return _resp(json.dumps({
+                "score": score,
+                "feedback": "Needs more detail." if score <= 2 else "Strong answer.",
+                "missed_points": ["specific trade-off"] if score <= 2 else [],
+                "probe_question": None,
+            }))
+        if "generate one next question" in prompt.lower():
+            action = "challenge" if "ACTION: challenge_claim" in prompt else "follow-up"
+            return _resp(json.dumps({
+                "question": f"What is the concrete {action} detail here?",
+                "ideal_answer": "A strong answer names the decision, trade-off, and evidence.",
+            }))
+        return await super().chat(
+            user_id=user_id,
+            logical_model=logical_model,
+            messages=messages,
+            **kwargs,
+        )
+
+
 def _resp(content: str) -> ChatCompletionResponse:
     return ChatCompletionResponse(
         id="x", model="m", provider="p", content=content,
@@ -381,6 +406,127 @@ async def test_resume_driven_interview_full_flow(tmp_path) -> None:
             # Title incorporates the resume filename so the user can tell
             # at-a-glance which resume drove this session.
             assert "ada" in (sess["title"] or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_interviewer_strong_answer_stays_on_topic_with_follow_up(tmp_path) -> None:
+    app = create_app(_settings(tmp_path))
+    app.state.gateway = FollowUpGateway()
+    app.state.vector_store = InMemoryVectorStore()
+
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            tok = await _register_login(c, "follow@x.com")
+            h = {"Authorization": f"Bearer {tok}"}
+
+            from openinterview_db import Project, QAItem, QASet
+            sm = app.state.db.sessionmaker
+            user_id = uuid.UUID((await c.get("/api/v1/me", headers=h)).json()["id"])
+            project_id = uuid.uuid4()
+            qa_set_id = uuid.uuid4()
+            async with sm() as s:
+                s.add(Project(
+                    id=project_id, user_id=user_id, name="demo",
+                    source_type="zip", status="ready",
+                    summary="x", architecture={"summary": "x"},
+                ))
+                s.add(QASet(
+                    id=qa_set_id, user_id=user_id, project_id=project_id,
+                    position="swe_generic", level="mid", status="ready", total=1,
+                ))
+                s.add(QAItem(
+                    qa_set_id=qa_set_id, user_id=user_id,
+                    category="architecture", level="mid",
+                    question="Describe your service architecture.",
+                    ideal_answer="API + workers with explicit trade-offs.",
+                    evidence=[],
+                    difficulty=3, tags=["architecture"],
+                    follow_up_axes=["trade_offs", "scale"],
+                ))
+                await s.commit()
+
+            r = await c.post("/api/v1/interviewer/sessions", headers=h, json={
+                "project_id": str(project_id),
+                "position": "swe_generic", "level": "mid", "n_questions": 1,
+            })
+            assert r.status_code == 200, r.text
+            sid = r.json()["id"]
+
+            r = await c.post(
+                f"/api/v1/interviewer/sessions/{sid}/messages",
+                headers=h,
+                json={"content": "The API delegates slow work to workers to isolate latency."},
+            )
+            assert r.status_code == 200
+            done = next(d for k, d in _parse_sse(r.text) if k == "done")
+
+            assert done["meta"]["next_action"] == "ask_follow_up"
+            assert done["meta"]["follow_up_axis"] == "trade_offs"
+            assert "concrete follow-up detail" in done["content"]
+
+            r = await c.get("/api/v1/interviewer/sessions", headers=h)
+            target = next(s["target"] for s in r.json() if s["id"] == sid)
+            assert target["thread_state"]["used_axes"] == ["trade_offs"]
+            assert target["thread_state"]["remaining_axes"] == ["scale"]
+
+
+@pytest.mark.asyncio
+async def test_interviewer_shallow_answer_challenges_before_switching(tmp_path) -> None:
+    app = create_app(_settings(tmp_path))
+    app.state.gateway = FollowUpGateway()
+    app.state.vector_store = InMemoryVectorStore()
+
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            tok = await _register_login(c, "challenge@x.com")
+            h = {"Authorization": f"Bearer {tok}"}
+
+            from openinterview_db import Project, QAItem, QASet
+            sm = app.state.db.sessionmaker
+            user_id = uuid.UUID((await c.get("/api/v1/me", headers=h)).json()["id"])
+            project_id = uuid.uuid4()
+            qa_set_id = uuid.uuid4()
+            async with sm() as s:
+                s.add(Project(
+                    id=project_id, user_id=user_id, name="demo",
+                    source_type="zip", status="ready",
+                    summary="x", architecture={"summary": "x"},
+                ))
+                s.add(QASet(
+                    id=qa_set_id, user_id=user_id, project_id=project_id,
+                    position="swe_generic", level="mid", status="ready", total=1,
+                ))
+                s.add(QAItem(
+                    qa_set_id=qa_set_id, user_id=user_id,
+                    category="architecture", level="mid",
+                    question="Describe your service architecture.",
+                    ideal_answer="API + workers with explicit trade-offs.",
+                    evidence=[],
+                    difficulty=3, tags=["architecture"],
+                    follow_up_axes=["implementation_details"],
+                ))
+                await s.commit()
+
+            r = await c.post("/api/v1/interviewer/sessions", headers=h, json={
+                "project_id": str(project_id),
+                "position": "swe_generic", "level": "mid", "n_questions": 1,
+            })
+            assert r.status_code == 200, r.text
+            sid = r.json()["id"]
+
+            r = await c.post(
+                f"/api/v1/interviewer/sessions/{sid}/messages",
+                headers=h,
+                json={"content": "Too vague."},
+            )
+            assert r.status_code == 200
+            done = next(d for k, d in _parse_sse(r.text) if k == "done")
+
+            assert done["meta"]["next_action"] == "challenge_claim"
+            assert done["meta"]["follow_up_axis"] == "implementation_details"
+            assert "concrete challenge detail" in done["content"]
 
 
 @pytest.mark.asyncio

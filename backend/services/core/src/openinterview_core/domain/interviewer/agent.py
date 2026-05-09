@@ -6,12 +6,9 @@ from __future__ import annotations
 import json
 from collections import deque
 from collections.abc import AsyncIterator
-from dataclasses import asdict
 from types import SimpleNamespace
-from typing import Any, TypedDict
+from typing import Any
 from uuid import UUID
-
-from langgraph.graph import END, START, StateGraph
 
 from openinterview_schemas import ChatMessage as ChatMessageDTO
 from openinterview_schemas import RetrieveRequest, RetrievalPurpose, RetrievalSource
@@ -20,19 +17,14 @@ from ...infra.db.qa_repository import SqlQARepository
 from ..memory.recall import RecalledLongTerm
 from ..retrieval import RetrievalService
 from .picker import _claim_signature, pick_next
-
-
-class _State(TypedDict, total=False):
-    user_id: UUID
-    session_id: UUID
-    qa_set_id: UUID
-    user_input: str
-    asked_ids: set
-    chosen_item_id: UUID
-    chosen_question: str
-    ideal_answer: str
-    evaluation: dict
-    final: str
+from .policy import (
+    coerce_thread_state,
+    decide_next_action,
+    mark_follow_up_asked,
+    mark_wrap_up,
+    note_answer_for_current_topic,
+    start_topic_state,
+)
 
 
 class InterviewerAgent:
@@ -48,117 +40,6 @@ class InterviewerAgent:
         self._gw = gateway
         self._retrieval = retrieval_service
         self._model = chat_logical_model
-        self._graph = self._build_graph()
-
-    def _build_graph(self):
-        g = StateGraph(_State)
-
-        async def evaluate_and_next(state: _State) -> dict:
-            # 1) If we have a previous question, evaluate the user's answer.
-            evaluation: dict[str, Any] = {}
-            if state.get("chosen_question") and state.get("user_input"):
-                eval_prompt = (
-                    "You are evaluating a candidate's answer to an interview question. "
-                    "Return STRICT JSON: "
-                    '{"score": 1-5, "feedback": str, "missed_points": [str], '
-                    '"probe_question": str | null}. JSON only.\n\n'
-                    f"QUESTION: {state['chosen_question']}\n"
-                    f"IDEAL ANSWER: {state.get('ideal_answer','')[:1500]}\n"
-                    f"USER ANSWER: {state['user_input'][:2000]}"
-                )
-                try:
-                    r = await self._gw.chat(
-                        user_id=state["user_id"],
-                        logical_model=self._model,
-                        messages=[ChatMessageDTO(role="user", content=eval_prompt)],
-                    )
-                    evaluation = _safe_json(r.content, default={}) or {}
-                except Exception:
-                    evaluation = {}
-
-            # 2) Pick the next question.
-            retrieved = await self._retrieval.retrieve(
-                RetrieveRequest(
-                    user_id=state["user_id"],
-                    session_id=state.get("session_id"),
-                    query="interview gaps and strengths",
-                    purpose=RetrievalPurpose.interviewer,
-                    sources=[RetrievalSource.long_term_memory],
-                    top_k=6,
-                )
-            )
-            async with self._sm() as s:
-                items = await SqlQARepository(s).list_items(
-                    user_id=state["user_id"], qa_set_id=state["qa_set_id"]
-                )
-            asked = state.get("asked_ids") or set()
-            pick = pick_next(
-                items=items,
-                asked_question_ids=asked,
-                long_term=_long_term_from_chunks(retrieved.chunks),
-            )
-
-            if pick is None:
-                # No more questions: ask the user to wrap up.
-                final = self._format_response(
-                    evaluation=evaluation,
-                    next_question=None,
-                    ideal_answer=None,
-                )
-                return {
-                    "evaluation": evaluation,
-                    "chosen_item_id": None,
-                    "chosen_question": "",
-                    "ideal_answer": "",
-                    "final": final,
-                }
-
-            asked.add(pick.id)
-            final = self._format_response(
-                evaluation=evaluation,
-                next_question=pick.question,
-                ideal_answer=None,
-            )
-            return {
-                "evaluation": evaluation,
-                "chosen_item_id": pick.id,
-                "chosen_question": pick.question,
-                "ideal_answer": pick.ideal_answer,
-                "asked_ids": asked,
-                "final": final,
-            }
-
-        g.add_node("eval_next", evaluate_and_next)
-        g.add_edge(START, "eval_next")
-        g.add_edge("eval_next", END)
-        return g.compile()
-
-    def _format_response(
-        self,
-        *,
-        evaluation: dict,
-        next_question: str | None,
-        ideal_answer: str | None,
-    ) -> str:
-        parts: list[str] = []
-        if evaluation:
-            score = evaluation.get("score")
-            fb = evaluation.get("feedback")
-            missed = evaluation.get("missed_points") or []
-            if score is not None:
-                parts.append(f"Score: {score}/5")
-            if fb:
-                parts.append(f"Feedback: {fb}")
-            if missed:
-                parts.append("Missed points:\n- " + "\n- ".join(str(m) for m in missed))
-            probe = evaluation.get("probe_question")
-            if probe and not next_question:
-                parts.append(f"Quick follow-up: {probe}")
-        if next_question:
-            parts.append(f"\nNext question:\n{next_question}")
-        else:
-            parts.append("\nWe've covered the planned questions. Use the 'End session' button to get your full evaluation.")
-        return "\n\n".join(parts).strip()
 
     async def turn(
         self,
@@ -173,6 +54,7 @@ class InterviewerAgent:
         recent_claims: list[str] | None = None,
         voice_features: dict | None = None,
         blueprint: dict | None = None,
+        thread_state: dict | None = None,
     ) -> dict:
         # Reuse the streaming pipeline and collapse to a single result dict.
         chunks: list[str] = []
@@ -188,6 +70,7 @@ class InterviewerAgent:
             recent_claims=recent_claims,
             voice_features=voice_features,
             blueprint=blueprint,
+            thread_state=thread_state,
         ):
             t = ev.get("type")
             if t == "token":
@@ -204,6 +87,9 @@ class InterviewerAgent:
             "asked_ids": {UUID(x) for x in meta.get("asked_ids", [])},
             "claim": meta.get("claim"),
             "recent_claims": meta.get("recent_claims", []),
+            "next_action": meta.get("next_action"),
+            "follow_up_axis": meta.get("follow_up_axis"),
+            "thread_state": meta.get("thread_state"),
         }
 
     async def stream(
@@ -219,6 +105,7 @@ class InterviewerAgent:
         recent_claims: list[str] | None = None,
         voice_features: dict | None = None,
         blueprint: dict | None = None,
+        thread_state: dict | None = None,
     ) -> AsyncIterator[dict]:
         """Stream tokens progressively.
 
@@ -273,7 +160,8 @@ class InterviewerAgent:
             except Exception:
                 evaluation = {}
 
-        # Pick next question (local)
+        # Pick the next seed question candidate, but let the policy decide
+        # whether to stay on the current topic first.
         retrieved = await self._retrieval.retrieve(
             RetrieveRequest(
                 user_id=user_id,
@@ -300,17 +188,27 @@ class InterviewerAgent:
             )
             items = list(items) + common_items
         asked = set(asked_ids or set())
-        if blueprint and len(asked) >= int(blueprint.get("n_questions") or 5):
-            items = []
+        max_seed_topics = int((blueprint or {}).get("n_questions") or 5)
+        seed_candidates = [] if len(asked) >= max_seed_topics else list(items)
         recent_dq: deque[str] = deque(
             (recent_claims or []), maxlen=3
         )
         pick = pick_next(
-            items=items,
+            items=seed_candidates,
             asked_question_ids=asked,
             long_term=_long_term_from_chunks(retrieved.chunks),
             recent_claims=recent_dq,
             category_weights=(blueprint or {}).get("category_weights") if blueprint else None,
+        )
+        thread = note_answer_for_current_topic(
+            coerce_thread_state(thread_state),
+            had_answer=bool(prev_question and user_input),
+        )
+        decision = decide_next_action(
+            evaluation=evaluation,
+            thread_state=thread,
+            has_current_topic=bool(thread.get("current_seed_item_id")),
+            has_unasked_seed=pick is not None,
         )
 
         chunks: list[str] = []
@@ -342,53 +240,98 @@ class InterviewerAgent:
                 for m in missed:
                     yield _emit(f"- {m}\n")
                 yield _emit("\n")
-            probe = evaluation.get("probe_question")
-            if probe and pick is None:
-                yield _emit(f"Quick follow-up: {probe}\n\n")
 
-        # 2) Stream next question (chunked for UI typing effect)
+        # 2) Stream either a depth follow-up or the next seed topic.
         chosen_claim: str | None = None
-        if pick is None:
+        chosen_item_id = None
+        chosen_q = ""
+        ideal = ""
+        next_action = decision.action
+        follow_up_axis = decision.follow_up_axis
+
+        if decision.action in {"ask_follow_up", "challenge_claim"}:
+            generated = await self._generate_thread_question(
+                user_id=user_id,
+                action=decision.action,
+                axis=decision.follow_up_axis,
+                thread_state=thread,
+                prev_question=prev_question,
+                prev_ideal_answer=prev_ideal_answer,
+                user_input=user_input,
+                evaluation=evaluation,
+            )
+            if generated is not None:
+                chosen_q, ideal = generated
+                chosen_item_id = thread.get("current_seed_item_id")
+                chosen_claim = (
+                    str(thread.get("current_claim"))
+                    if thread.get("current_claim")
+                    else None
+                )
+                thread = mark_follow_up_asked(
+                    thread,
+                    action=decision.action,
+                    axis=decision.follow_up_axis,
+                )
+                yield _emit("Next question:\n")
+                step = 24
+                for i in range(0, len(chosen_q), step):
+                    yield _emit(chosen_q[i : i + step])
+            else:
+                next_action = "switch_topic" if pick is not None else "wrap_up"
+                follow_up_axis = None
+
+        if next_action in {"ask_opener", "switch_topic"} and not chosen_q:
+            if pick is None:
+                next_action = "wrap_up"
+            else:
+                asked.add(pick.id)
+                chosen_item_id = pick.id
+                chosen_q = pick.question
+                ideal = pick.ideal_answer
+
+                # Resume-scope: surface the claim so the candidate knows what's
+                # being probed. We pull it from the picked item's meta blob.
+                pick_meta = getattr(pick, "meta", None)
+                if isinstance(pick_meta, dict):
+                    if pick_meta.get("source") == "common":
+                        source = (
+                            pick_meta.get("source_label") or "common interview KB"
+                        )
+                        yield _emit(f"Source: {source}\n\n")
+                    claim_text = (pick_meta.get("claim") or "").strip()
+                    section = pick_meta.get("claim_section") or ""
+                    if claim_text:
+                        chosen_claim = claim_text
+                        header = "About this on your resume:\n"
+                        header += f"> {claim_text}"
+                        if section:
+                            header += f"  ({section})"
+                        header += "\n\n"
+                        yield _emit(header)
+                        sig = _claim_signature(pick)
+                        if sig:
+                            recent_dq.append(sig)
+
+                thread = start_topic_state(
+                    pick,
+                    action=next_action,
+                    claim=chosen_claim,
+                    max_topic_answer_count=int(
+                        thread.get("max_topic_answer_count") or 3
+                    ),
+                )
+                yield _emit("Next question:\n")
+                step = 24
+                for i in range(0, len(chosen_q), step):
+                    yield _emit(chosen_q[i : i + step])
+
+        if next_action == "wrap_up" and not chosen_q:
             yield _emit(
                 "We've covered the planned questions. Use the 'End session' "
                 "button to get your full evaluation."
             )
-            chosen_item_id = None
-            chosen_q = ""
-            ideal = ""
-        else:
-            asked.add(pick.id)
-            chosen_item_id = pick.id
-            chosen_q = pick.question
-            ideal = pick.ideal_answer
-
-            # Resume-scope: surface the claim so the candidate knows what's
-            # being probed. We pull it from the picked item's meta blob.
-            pick_meta = getattr(pick, "meta", None)
-            if isinstance(pick_meta, dict):
-                if pick_meta.get("source") == "common":
-                    source = pick_meta.get("source_label") or "common interview KB"
-                    yield _emit(f"Source: {source}\n\n")
-                claim_text = (pick_meta.get("claim") or "").strip()
-                section = pick_meta.get("claim_section") or ""
-                if claim_text:
-                    chosen_claim = claim_text
-                    header = "About this on your resume:\n"
-                    header += f"> {claim_text}"
-                    if section:
-                        header += f"  ({section})"
-                    header += "\n\n"
-                    yield _emit(header)
-                    sig = _claim_signature(pick)
-                    if sig:
-                        recent_dq.append(sig)
-
-            yield _emit("Next question:\n")
-            # Smaller chunks (~24 chars) make the UI feel like typing.
-            q = pick.question
-            step = 24
-            for i in range(0, len(q), step):
-                yield _emit(q[i : i + step])
+            thread = mark_wrap_up(thread)
 
         full = "".join(chunks)
         yield {
@@ -402,8 +345,69 @@ class InterviewerAgent:
                 "asked_ids": [str(i) for i in asked],
                 "claim": chosen_claim,
                 "recent_claims": list(recent_dq),
+                "next_action": next_action,
+                "follow_up_axis": follow_up_axis,
+                "thread_state": thread,
             },
         }
+
+    async def _generate_thread_question(
+        self,
+        *,
+        user_id: UUID,
+        action: str,
+        axis: str | None,
+        thread_state: dict,
+        prev_question: str,
+        prev_ideal_answer: str,
+        user_input: str,
+        evaluation: dict,
+    ) -> tuple[str, str] | None:
+        seed_q = str(thread_state.get("current_seed_question") or "")
+        seed_a = str(thread_state.get("current_seed_ideal_answer") or "")
+        category = str(thread_state.get("current_category") or "general")
+        claim = str(thread_state.get("current_claim") or "")
+        prompt = (
+            "You are a realistic technical interviewer. Generate ONE next "
+            "question that stays on the current topic.\n"
+            "Return STRICT JSON: {\"question\": str, \"ideal_answer\": str}. "
+            "JSON only.\n\n"
+            f"ACTION: {action}\n"
+            f"FOLLOW_UP_AXIS: {axis or ''}\n"
+            f"CATEGORY: {category}\n"
+            f"RESUME_CLAIM_OR_TOPIC: {claim}\n"
+            f"SEED QUESTION: {seed_q[:1200]}\n"
+            f"SEED IDEAL ANSWER: {seed_a[:1200]}\n"
+            f"PREVIOUS QUESTION: {prev_question[:1200]}\n"
+            f"PREVIOUS IDEAL ANSWER: {prev_ideal_answer[:1200]}\n"
+            f"CANDIDATE ANSWER: {user_input[:2000]}\n"
+            f"EVALUATION JSON: {json.dumps(evaluation, ensure_ascii=False)[:1200]}\n\n"
+            "Rules:\n"
+            "- Do not switch topics.\n"
+            "- If ACTION is challenge_claim, ask for concrete proof, ownership, "
+            "or missing implementation details.\n"
+            "- If ACTION is ask_follow_up, probe the FOLLOW_UP_AXIS at a deeper "
+            "level than the previous question.\n"
+            "- ideal_answer is a short rubric for a strong answer, not a full essay."
+        )
+        try:
+            r = await self._gw.chat(
+                user_id=user_id,
+                logical_model=self._model,
+                messages=[ChatMessageDTO(role="user", content=prompt)],
+            )
+            data = _safe_json(r.content, default={}) or {}
+            question = str(data.get("question") or "").strip()
+            ideal = str(data.get("ideal_answer") or "").strip()
+            if question:
+                return (
+                    question,
+                    ideal
+                    or "A strong answer should give concrete details, trade-offs, and evidence.",
+                )
+        except Exception:
+            return None
+        return None
 
     async def _common_candidates(self, *, user_id: UUID, query: str, blueprint: dict) -> list:
         weights = blueprint.get("category_weights") or {}
@@ -441,6 +445,7 @@ class InterviewerAgent:
                     difficulty=3,
                     question=q,
                     ideal_answer=answer,
+                    follow_up_axes=[],
                     meta={
                         "source": "common",
                         "source_label": m.metadata.get("source") or "common",

@@ -224,6 +224,7 @@ class CoreAgentFacade(AgentFacade):
                     "asked_ids": [],
                     "current_question": "",
                     "current_ideal_answer": "",
+                    "thread_state": {},
                 },
             )
             await s.commit()
@@ -245,6 +246,7 @@ class CoreAgentFacade(AgentFacade):
             asked_ids=set(),
             prev_question="",
             prev_ideal_answer="",
+            thread_state={},
         )
         question = first.get("chosen_question") or "Tell me about this project."
         opening = f"Question 1:\n{question}"
@@ -257,7 +259,12 @@ class CoreAgentFacade(AgentFacade):
                 user_id=user_id,
                 role="assistant",
                 content=opening,
-                meta={"opening": True},
+                meta={
+                    "opening": True,
+                    "next_action": first.get("next_action"),
+                    "follow_up_axis": first.get("follow_up_axis"),
+                    "thread_state": first.get("thread_state"),
+                },
             )
             row = await chat_repo.get_session(user_id=user_id, session_id=sid)
             if row is not None:
@@ -265,6 +272,7 @@ class CoreAgentFacade(AgentFacade):
                 new_target["asked_ids"] = [str(i) for i in first.get("asked_ids", set())]
                 new_target["current_question"] = first.get("chosen_question", "")
                 new_target["current_ideal_answer"] = first.get("ideal_answer", "")
+                new_target["thread_state"] = first.get("thread_state") or {}
                 row.target = new_target
             await s.commit()
         return sid, opening
@@ -311,6 +319,7 @@ class CoreAgentFacade(AgentFacade):
                     "recent_claims": [],
                     "current_question": "",
                     "current_ideal_answer": "",
+                    "thread_state": {},
                 },
             )
             await s.commit()
@@ -344,6 +353,7 @@ class CoreAgentFacade(AgentFacade):
             prev_question="",
             prev_ideal_answer="",
             recent_claims=[],
+            thread_state={},
         )
         question = first.get("chosen_question") or "Tell me about a recent project."
         claim = first.get("claim")
@@ -360,7 +370,12 @@ class CoreAgentFacade(AgentFacade):
                 user_id=user_id,
                 role="assistant",
                 content=opening,
-                meta={"opening": True},
+                meta={
+                    "opening": True,
+                    "next_action": first.get("next_action"),
+                    "follow_up_axis": first.get("follow_up_axis"),
+                    "thread_state": first.get("thread_state"),
+                },
             )
             row = await chat_repo.get_session(user_id=user_id, session_id=sid)
             if row is not None:
@@ -371,6 +386,7 @@ class CoreAgentFacade(AgentFacade):
                 new_target["recent_claims"] = first.get("recent_claims", [])
                 new_target["current_question"] = first.get("chosen_question", "")
                 new_target["current_ideal_answer"] = first.get("ideal_answer", "")
+                new_target["thread_state"] = first.get("thread_state") or {}
                 row.target = new_target
             await s.commit()
         return sid, opening
@@ -393,6 +409,11 @@ class CoreAgentFacade(AgentFacade):
             prev_q = str(target.get("current_question") or "")
             prev_a = str(target.get("current_ideal_answer") or "")
             recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
+            thread_state = (
+                target.get("thread_state")
+                if isinstance(target.get("thread_state"), dict)
+                else {}
+            )
             await chat_repo.append_message(
                 session_id=session_id, user_id=user_id, role="user", content=content
             )
@@ -410,6 +431,7 @@ class CoreAgentFacade(AgentFacade):
             prev_question=prev_q,
             prev_ideal_answer=prev_a,
             recent_claims=recent_claims,
+            thread_state=thread_state,
         )
         text = result.get("final", "").strip() or "(no response)"
 
@@ -420,7 +442,12 @@ class CoreAgentFacade(AgentFacade):
                 user_id=user_id,
                 role="assistant",
                 content=text,
-                meta={"evaluation": result.get("evaluation")},
+                meta={
+                    "evaluation": result.get("evaluation"),
+                    "next_action": result.get("next_action"),
+                    "follow_up_axis": result.get("follow_up_axis"),
+                    "thread_state": result.get("thread_state"),
+                },
             )
             row = await chat_repo.get_session(user_id=user_id, session_id=session_id)
             if row is not None:
@@ -429,6 +456,7 @@ class CoreAgentFacade(AgentFacade):
                 new_target["recent_claims"] = result.get("recent_claims", [])
                 new_target["current_question"] = result.get("chosen_question", "")
                 new_target["current_ideal_answer"] = result.get("ideal_answer", "")
+                new_target["thread_state"] = result.get("thread_state") or {}
                 row.target = new_target
             await s.commit()
         return text

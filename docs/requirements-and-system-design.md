@@ -58,13 +58,12 @@ For each project, the system produces and stores:
 - (d) "Interesting decisions" list (tech choices, tradeoffs, risks)
 - (e) Resume-claim ↔ project-fact mapping
 
-**FR-4 QA pre-generation (sharded)**
-- Generate grounded Q&A per `(project × position × level)`.
-- Generation runs in **batches of 5–10 questions per round**, each batch persisted to a **temp shard file** on disk; final merge produces the canonical per-position QA set.
-- Resumable on crash/restart.
-- Each Q&A entry stored with rich metadata (see §4.4).
-- Default target: ≥ 50 grounded Q&A per `(project × position × level)` selection.
-- Expansion on demand from the UI.
+**FR-4 Question-set generation (sharded, in-process boundary)**
+- Generate grounded question sets scoped to either `(project × position × level)` or `(resume × position × level)`.
+- `QuestionSetService` owns the lifecycle: create/get QA set, mark `running`, plan shards, run bounded shard generation, merge/dedupe, persist canonical items, and mark `ready` or `failed`.
+- The first shipped slice is in-process. Shards are transient in memory; durable `qa_runs` / `qa_shards` artifacts are deferred until generation moves fully to workers.
+- Each item stores rich metadata: evidence, tags, difficulty, resume-claim context, and canonical `follow_up_axes` for interviewer depth probes.
+- Expansion/regeneration is available from the UI.
 
 **FR-5 Mentor mode**
 - Open-ended chat with the user.
@@ -73,7 +72,9 @@ For each project, the system produces and stores:
 - Suggests next focus areas based on profile memory.
 
 **FR-6 Interviewer mode**
-- Drives a mock interview: picks a question set scoped by selected position/level, asks one question at a time, accepts answers, asks follow-ups.
+- Drives a mock interview from a project- or resume-scoped question set.
+- Maintains per-session `thread_state` so the interviewer can stay on a seed topic for bounded follow-ups before switching topics.
+- Uses an interviewer policy with explicit actions: `ask_opener`, `ask_follow_up`, `challenge_claim`, `switch_topic`, and `wrap_up`.
 - At session end, produces a structured evaluation against the rubric (§3.5).
 - Writes evaluation events into episodic memory; distillation job updates semantic profile memory so Mentor can react.
 
@@ -152,7 +153,7 @@ For each project, the system produces and stores:
 
 - **NFR-1 Self-hostable** on a single Docker Compose stack.
 - **NFR-2 Multi-tenant isolation** at DB row level + namespaced vector collections + per-user filesystem paths for blobs.
-- **NFR-3 Resumability**: ingestion and QA generation must resume after crash without losing committed shards.
+- **NFR-3 Resumability**: ingestion must resume after crash; question-set generation has retryable DB status/error semantics in v1, with durable shard resume deferred to worker hardening.
 - **NFR-4 Observability**: structured logs, request ids, gateway usage events, ingestion job metrics.
 - **NFR-5 Performance (MVP)**: ingest a 50k-LOC project + resume in < 10 minutes on a developer laptop using a cloud LLM provider.
 - **NFR-6 Security**: secrets (user API keys, JWT secret) encrypted at rest using a server master key; passwords hashed with argon2.
@@ -238,7 +239,7 @@ Web UI microphone
 
 - **Web UI** — static SPA served by Core API or a sidecar.
 - **Core API** — primary application, multi-tenant, user-facing endpoints.
-- **Workers** — background jobs (ingestion, QA generation, memory distillation). Multiple processes OK.
+- **Workers** — background jobs (ingestion, common-KB processing, memory distillation; future QA offload). Multiple processes OK.
 - **GenAI Gateway** — independent service. Core/Workers only know it through an internal HTTP API; provider details are invisible to the rest of the system.
 - **Realtime Gateway** — WebSocket service for live interviewer audio. It owns browser PCM streaming, OpenAI Realtime transcription, turn aggregation, speaker verification, and the bridge back to Core. It never exposes raw provider keys to the browser.
 - **Retrieval boundary** — in-process Core domain service for v1. It owns
@@ -246,6 +247,10 @@ Web UI microphone
   citation formatting, snippet truncation, token-budgeted context assembly, and
   structured retrieval logs. `/chat`, Mentor, Interviewer, QA generation, and
   resume claim mapping call through this boundary.
+- **Question-set boundary** — in-process Core domain service for v1. It owns
+  question-set status transitions, project/resume planning, sharded generation,
+  merge/dedupe, persistence, and retry/error semantics. `QAGenerationService`
+  remains as a compatibility facade for older callers.
 - **PostgreSQL** — single source of truth for relational data.
 - **Vector DB (Chroma)** — embeddings for code chunks, docs, QA, common KB, memory facts.
 - **Blob store** — uploaded zips, extracted source trees, generated diagrams.
@@ -282,24 +287,37 @@ Steps:
 
 All steps idempotent and re-runnable; intermediate state persisted in DB so jobs resume where they stopped.
 
-### 3.3 QA generation pipeline (sharded + merged)
+### 3.3 Question-set generation pipeline (sharded + merged)
 
-Input: `(user_id, project_id, position, level)`.
-Strategy:
-1. Build a **plan**: list of "topics" (modules, key decisions, resume claims, common patterns relevant to position+level). Plan is persisted.
-2. For each topic, **batch-generate 5–10 Q&A** through the Gateway. Each batch:
-   - Has its own job id and a **shard file** at `/var/openinterview/blobs/<user_id>/qa/<run_id>/shard_<n>.json`.
-   - Written atomically (write tmp, fsync, rename).
-   - Recorded as `committed` in `qa_runs` table once on disk.
-3. After all topics done, a **merge step** loads all shards, deduplicates similar questions (embedding cosine threshold), normalizes metadata, and writes the canonical set into the `qa` table + Chroma collection `user_<id>_qa`.
-4. If the run is interrupted, restart picks up uncommitted topics only.
+Input: `user_id`, target scope (`project_id` or `resume_id`), `position`, and
+`level`.
+
+Current v1 strategy:
+1. `QuestionSetService.generate(...)` creates or resolves the target `qa_set`
+   and marks it `running`, clearing any previous retry error.
+2. Project-scoped sets use the project planner; resume-scoped sets use the
+   deterministic resume planner over parsed resume data and claim mappings.
+3. Each shard generates items through the Gateway with bounded concurrency.
+   Shard failures are tolerated individually; a run fails only when every shard
+   fails or the target cannot be loaded.
+4. The merge step deduplicates by normalized question text, balances
+   categories, caps the final set, and persists canonical `qa_items`.
+5. The repository marks the set `ready` with an updated `total`; failures mark
+   the set `failed` with a truncated error.
+
+Deferred worker-hardening shape:
+- Durable `qa_runs` / `qa_shards` tables.
+- Atomic blob-backed shard artifacts under `/var/openinterview/blobs/<user_id>/qa/...`.
+- Resume after crash by replaying only uncommitted topics.
 
 ### 3.4 QA entry schema (logical)
 
 ```
 question:        str
 model_answer:    str
-follow_ups:      list[str]
+follow_up_axes:  list[enum(implementation_details|trade_offs|scale|debugging|
+                           ownership|failure_modes|metrics|testing|
+                           alternatives|reflection)]
 position:        str
 level:           enum(junior|mid|senior|staff|principal|tech_lead)
 category:        enum(coding|system_design|ml|applied_ai|behavioral|project_deepdive)
@@ -307,6 +325,7 @@ grounded_refs:   list[{project_id, file, lines}]
 difficulty:      int (1..5)
 level_deltas:    map[level -> str]   # how a different level would answer
 tags:            list[str]
+meta:            map?                # resume claim/source context
 source:          enum(private|common)
 created_at:      datetime
 version:         int
@@ -648,14 +667,15 @@ resumes(id, user_id, original_filename, parsed_json, created_at)
 target_selections(id, user_id, position, level, project_ids[], created_at)
 
 ingest_runs(id, user_id, project_id, status, step, error?, started_at, finished_at)
-qa_runs(id, user_id, project_id, position, level, status, plan_json, started_at, finished_at)
-qa_shards(id, qa_run_id, topic, path, committed, created_at)
-qa(id, user_id, project_id, position, level, category, question, model_answer,
-   follow_ups_json, grounded_refs_json, difficulty, level_deltas_json, tags, source,
-   version, created_at)
+qa_sets(id, user_id, scope, project_id?, resume_id?, position, level, status,
+        total, error?, created_at)
+qa_items(id, qa_set_id, user_id, category, level, question, ideal_answer,
+         evidence_json, difficulty, tags_json, follow_up_axes_json, meta_json?,
+         created_at)
 
-chat_sessions(id, user_id, mode, position?, level?, started_at, ended_at?)
-chat_messages(id, session_id, role, content, audio_ref?, created_at)
+chat_sessions(id, user_id, mode, project_id?, title?, target_json, status,
+              turn_count, created_at)
+chat_messages(id, session_id, user_id, role, content, meta_json?, created_at)
 
 episodic_events(id, user_id, session_id?, kind, payload_json, created_at)
 profile_facts(id, user_id, kind, key, value, confidence, source_event_ids[], revision, created_at)
@@ -685,10 +705,13 @@ Logical paths:
 ```
 users/<user_id>/projects/<project_id>/source/...
 users/<user_id>/projects/<project_id>/diagrams/*.mmd
-users/<user_id>/qa/<qa_run_id>/shard_*.json
 users/<user_id>/resumes/<resume_id>/original.<ext>
 users/<user_id>/exports/<export_id>.zip
 ```
+
+Deferred QA worker offload may add `users/<user_id>/qa/<qa_run_id>/...`
+generation artifacts later; current question-set shards are transient in
+process.
 
 Backend resolution is configured via env (see §3.12):
 - `local` → `${OPENINTERVIEW_DATA_DIR}/users/<user_id>/...`
@@ -715,16 +738,17 @@ Worker -> Core: mark ingest_run done
 Core -> WebUI: progress stream (SSE) until done
 ```
 
-### 5.2 QA generation (sharded)
+### 5.2 Question-set generation (sharded)
 
 ```
-Core -> DB: enqueue qa_run with plan
-Worker: for each topic in plan:
-  Worker -> Gateway: generate batch of 5–10 Q&A
-  Worker -> FS: write shard_n.json (atomic)
-  Worker -> DB: mark shard committed
-Worker (merge): load all shards -> dedupe -> write to qa table + vector store
-Worker -> DB: mark qa_run done
+Core -> QuestionSetService: generate(scope, target, position, level)
+QuestionSetService -> DB: get/create qa_set; status=running; error=NULL
+QuestionSetService -> Planner: project shards OR resume shards
+QuestionSetService -> Gateway: bounded concurrent shard generation
+QuestionSetService -> Merger: dedupe, balance categories, cap set
+QuestionSetService -> DB: replace qa_items; status=ready; total=N
+alt all shards fail
+  QuestionSetService -> DB: status=failed; error=<truncated>
 ```
 
 ### 5.3 Mentor turn
@@ -742,14 +766,18 @@ Core -> WebUI: stream tokens
 ### 5.4 Interviewer session + evaluation
 
 ```
-WebUI -> Core: start interviewer session (position, level)
-Core: pick question plan from QA bank biased by profile weaknesses
-loop per question:
-  Core -> WebUI: question
+WebUI -> Core: start interviewer session (position, level, project|resume)
+Core: resolve qa_set; build interview blueprint; initialize thread_state
+Core: pick seed topic from QA bank/common KB biased by profile weaknesses
+loop per turn:
+  Core -> WebUI: seed question or thread follow-up
   WebUI -> Core: answer
-  Core -> Gateway: optional probe / follow-up generation
+  Core -> Gateway: evaluate answer
+  Core policy: ask_follow_up | challenge_claim | switch_topic | wrap_up
+  Core -> Gateway: generate follow-up/challenge when policy stays on topic
+  Core -> DB: persist assistant meta(next_action, follow_up_axis, thread_state)
 end loop
-Core -> Gateway: end-of-session evaluation against rubric
+Core -> Gateway: end-of-session evaluation against rubric + coverage events
 Core -> DB: write episodic_event(kind=evaluation, payload=rubric+notes)
 Core -> Worker: enqueue distillation job
 Worker -> Gateway: distill profile delta from new events
@@ -886,9 +914,10 @@ open-interview/
             projects/
             resumes/
             targets/
-            qa/                      # planner, dedupe, level deltas
+            question_sets/           # generation boundary / lifecycle
+            qa/                      # planners, shard generators, merger
             mentor/                  # agent policy, prompt builders
-            interviewer/             # session policy, rubric
+            interviewer/             # thread policy, picker, rubric
             memory/                  # raw / episodic / semantic models
             kb/                      # retriever interfaces
           infra/                     # adapters / I/O
@@ -900,7 +929,7 @@ open-interview/
               azure.py
               gcs.py
             gateway_client/          # HTTP client to GenAI Gateway
-            agents/                  # LangGraph wiring (mentor, interviewer)
+            agents/                  # agent integration helpers
             audio/                   # v1 stubs (NoopSTT/TTS)
           config/                    # pydantic settings, env loading
           security/                  # auth, hashing, encryption, isolation guards
@@ -1060,9 +1089,9 @@ Milestones (rough order):
 1. **M0 — Skeletons**: Docker Compose, Postgres, Chroma, Core, Gateway, Web shell, auth, healthchecks.
 2. **M1 — Gateway**: providers, rate limits, usage logging, BYO-key path.
 3. **M2 — Project & resume ingestion**: upload, tree-sitter chunking, hierarchical summaries, diagrams, claim mapping.
-4. **M3 — QA generation**: planner, sharded generator, merger, dedupe.
+4. **M3 — QA generation**: `QuestionSetService`, project/resume scopes, sharded generators, merger, dedupe, follow-up axes.
 5. **M4 — Mentor**: LangGraph agent + retrieval + memory read.
-6. **M5 — Interviewer**: LangGraph agent + rubric evaluator + episodic write.
+6. **M5 — Interviewer**: threaded policy, gap-aware picker, per-turn evaluation, rubric evaluator, episodic write.
 7. **M6 — Distillation & profile memory**: job + Mentor consumes profile.
 8. **RAG boundary**: in-process retrieval service shared by chat, Mentor, Interviewer, QA generation, and resume claim mapping.
 9. **M7 — Common KB**: admin spaces/sources/uploads, extracted items, embeddings, single/batch document delete; seed content tracked separately.

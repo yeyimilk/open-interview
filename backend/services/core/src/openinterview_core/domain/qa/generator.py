@@ -13,7 +13,7 @@ from openinterview_schemas import (
 )
 
 from ..retrieval import RetrievalService
-from .types import QAEvidence, QAItem, QAShard
+from .types import QAEvidence, QAItem, QAShard, normalize_follow_up_axes
 
 
 class ShardGenerator:
@@ -100,6 +100,9 @@ class ShardGenerator:
             difficulty = int(it.get("difficulty") or 3)
             difficulty = max(1, min(5, difficulty))
             tags = [str(t) for t in (it.get("tags") or [])][:6]
+            follow_up_axes = normalize_follow_up_axes(
+                it.get("follow_up_axes"), category=shard.category
+            )
             out.append(
                 QAItem(
                     category=shard.category,
@@ -109,6 +112,7 @@ class ShardGenerator:
                     evidence=evidence,
                     difficulty=difficulty,
                     tags=tags,
+                    follow_up_axes=follow_up_axes,
                 )
             )
         return out
@@ -138,11 +142,14 @@ class ShardGenerator:
             f"{ev}\n\n"
             "Return STRICT JSON:\n"
             '{ "items": [ { "question": str, "ideal_answer": str, '
-            '"evidence_indices": [int], "difficulty": 1-5, "tags": [str] } ] }\n'
+            '"evidence_indices": [int], "difficulty": 1-5, "tags": [str], '
+            '"follow_up_axes": [str] } ] }\n'
             "Rules:\n"
             "- Each question must be answerable using the evidence (or general principles applied to it).\n"
             "- Ideal answer must be concrete and reference specifics from the project where relevant.\n"
             "- difficulty: 1=intro, 5=expert. Match the LEVEL.\n"
+            "- follow_up_axes must use only: implementation_details, trade_offs, scale, debugging, ownership, failure_modes, metrics, testing, alternatives, reflection.\n"
+            "- Pick 3-5 follow_up_axes that a realistic interviewer could probe after the candidate answers.\n"
             "- For 'behavioral_grounded' or when no evidence applies, evidence_indices may be [].\n"
             "- JSON only, no prose."
         )

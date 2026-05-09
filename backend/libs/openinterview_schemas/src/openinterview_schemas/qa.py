@@ -23,11 +23,14 @@ class QAItemOut(BaseModel):
     evidence: list[QAEvidence] = Field(default_factory=list)
     difficulty: int = 3
     tags: list[str] = Field(default_factory=list)
+    follow_up_axes: list[str] = Field(default_factory=list)
 
 
 class QASetOut(BaseModel):
     id: UUID
-    project_id: UUID
+    project_id: UUID | None = None
+    resume_id: UUID | None = None
+    scope: str = "project"
     position: str
     level: str
     status: str

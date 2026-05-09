@@ -70,6 +70,7 @@ class QAItem(UUIDPKMixin, TimestampMixin, Base):
     evidence: Mapped[Any] = mapped_column(JsonType, nullable=True)  # [{rel_path, start, end, snippet}]
     difficulty: Mapped[int] = mapped_column(default=3, nullable=False)  # 1-5
     tags: Mapped[Any] = mapped_column(JsonType, nullable=True)
+    follow_up_axes: Mapped[Any] = mapped_column(JsonType, nullable=True)
     # Optional context populated for resume-scoped items: { "claim": str,
     # "claim_section": str, "source_project_id": str | None }. Project-scoped
     # items leave it NULL.

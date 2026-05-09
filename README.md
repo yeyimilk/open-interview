@@ -96,8 +96,9 @@ shows its work in a collapsible trace next to every answer.
 
 ### 🎤 Interviewer mode
 Adaptive interviewer that asks questions sourced from your own
-project. Per-turn evaluation, gap-aware question picker, and a
-final rubric with strengths, weaknesses, and suggested practice.
+project or resume. Per-turn evaluation, gap-aware topic selection,
+threaded follow-up probes, and a final rubric with strengths,
+weaknesses, and suggested practice.
 
 </td>
 </tr>
@@ -105,9 +106,11 @@ final rubric with strengths, weaknesses, and suggested practice.
 <td width="50%" valign="top">
 
 ### 📚 Grounded QA generation
-Per-(project × position × level) bank of 25 evidence-backed
-questions: planner → 7 sharded generators → merger.
-Auto-generates on ingest, regeneratable on demand.
+Project- or resume-scoped banks of evidence-backed questions:
+`QuestionSetService` → planner → sharded generators → merger.
+Each item carries citations plus `follow_up_axes` so the mock
+interviewer can drill into implementation details, trade-offs,
+scale, debugging, ownership, and failure modes.
 
 </td>
 <td width="50%" valign="top">
@@ -231,10 +234,11 @@ mediated delivery with chunking + dedup.
 │            interviewer, audio, messaging                 │
 │  domain/ ─ projects (chunker, embedder, summarizer)      │
 │            resumes (parser, claim grounder)              │
-│            qa (planner, shard generator, merger)         │
+│            question_sets (in-process generation boundary)│
+│            qa (planner, shard generators, merger)        │
 │            retrieval (shared RAG boundary + adapters)    │
 │            mentor (LangGraph + ProjectFs tools)          │
-│            interviewer (LangGraph + picker + evaluator)  │
+│            interviewer (policy + picker + evaluator)     │
 │            memory (recall + distiller)                   │
 │            messengers (kernel · sdk · plugins/whatsapp)  │
 │  infra/  ─ Postgres · Redis · Chroma · BlobStorage       │
@@ -442,9 +446,9 @@ deletion, and a typecheck-clean Vite build.
 | **M0** Foundations | ✅ | FastAPI skeleton, multi-tenant auth (argon2 + JWT + refresh), per-user data isolation |
 | **M1** GenAI Gateway | ✅ | OpenAI-compatible provider, BYO + shared modes, rate limiting, usage logging |
 | **M2** Ingestion | ✅ | Project zip → chunk → embed → summarize → diagram; resume parse → claim ground |
-| **M3** QA generation | ✅ | Planner → 7 sharded generators → merger; auto on ingest, regenerable |
+| **M3** QA generation | ✅ | In-process `QuestionSetService`, project/resume scopes, sharded generators → merger, follow-up axes |
 | **M4** Mentor mode | ✅ | LangGraph + 3-layer memory + ProjectFs tools (`list_dir` / `read_file` / `grep` / `tree`) |
-| **M5** Interviewer mode | ✅ | Gap-aware picker, per-turn eval, final rubric, evaluation page |
+| **M5** Interviewer mode | ✅ | Gap-aware seed-topic picker, threaded follow-up policy, per-turn eval, final rubric, evaluation page |
 | **M6** Memory | ✅ | Working / episodic / long-term, distilled at session end, vector-recalled |
 | **RAG** Retrieval boundary | ✅ | In-process `RetrievalService` shared by chat, Mentor, Interviewer, QA generation, and resume claim mapping |
 | **Audio** | ✅ | Voice input in chat + multimodal delivery scoring rolled into evaluation |

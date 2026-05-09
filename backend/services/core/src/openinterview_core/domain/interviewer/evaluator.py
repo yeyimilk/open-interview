@@ -33,6 +33,13 @@ class SessionEvaluator:
                 user_id=user_id, session_id=session_id
             )
         transcript = "\n".join(f"{m.role.upper()}: {m.content}" for m in msgs)
+        coverage = _coverage_events(msgs)
+        coverage_block = (
+            "\n\nINTERVIEW COVERAGE EVENTS:\n"
+            f"{json.dumps(coverage, ensure_ascii=False)[:2000]}"
+            if coverage
+            else ""
+        )
 
         # Aggregate per-turn voice analysis (audio-mode interviews only).
         delivery_summary = _aggregate_voice([
@@ -64,6 +71,8 @@ class SessionEvaluator:
             + "}\n"
             "Use these categories where applicable: architecture, code_quality, "
             "data_modeling, scaling, testing, applied_ai_specific, behavioral_grounded.\n"
+            "When INTERVIEW COVERAGE EVENTS are present, use them to comment on "
+            "both breadth across seed topics and depth through follow-ups.\n"
             + (
                 "When DELIVERY METRICS are present, produce delivery_score "
                 "(speaking pace, fillers, confidence, language accuracy) and a "
@@ -73,6 +82,7 @@ class SessionEvaluator:
             )
             + "JSON only.\n\n"
             f"TRANSCRIPT:\n{transcript[:12000]}"
+            + coverage_block
             + delivery_block
         )
         try:
@@ -231,6 +241,30 @@ def _aggregate_voice(voice_blobs: list[dict | None]) -> dict | None:
         "language_issues": lang_issues[:10],
         "pronunciation_issues": pron_issues[:10],
     }
+
+
+def _coverage_events(messages) -> list[dict]:
+    out: list[dict] = []
+    for m in messages:
+        if m.role != "assistant" or not isinstance(m.meta, dict):
+            continue
+        action = m.meta.get("next_action")
+        if not action:
+            continue
+        state = m.meta.get("thread_state") or {}
+        out.append(
+            {
+                "action": action,
+                "axis": m.meta.get("follow_up_axis"),
+                "category": (
+                    state.get("current_category") if isinstance(state, dict) else None
+                ),
+                "topic_answer_count": (
+                    state.get("topic_answer_count") if isinstance(state, dict) else None
+                ),
+            }
+        )
+    return out[-20:]
 
 
 def _avg_language(blobs: list[dict]) -> float | None:

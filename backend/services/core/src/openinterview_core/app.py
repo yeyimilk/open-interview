@@ -135,6 +135,10 @@ async def _dev_patch_columns(conn) -> None:
         await conn.execute(
             text("ALTER TABLE qa_items ADD COLUMN meta JSON NULL")
         )
+    if not await _has_column("qa_items", "follow_up_axes"):
+        await conn.execute(
+            text("ALTER TABLE qa_items ADD COLUMN follow_up_axes JSON NULL")
+        )
 
     # interview_evaluations: delivery rubric (audio-mode interviews).
     if not await _has_column("interview_evaluations", "delivery_score"):

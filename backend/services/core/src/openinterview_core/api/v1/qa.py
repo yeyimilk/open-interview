@@ -40,6 +40,13 @@ async def _safe_run(svc: QAGenerationService, **kwargs) -> None:
         pass
 
 
+async def _safe_run_for_resume(svc: QAGenerationService, **kwargs) -> None:
+    try:
+        await svc.run_for_resume(**kwargs)
+    except Exception:
+        pass
+
+
 @router.post(
     "/projects/{project_id}/qa:generate",
     response_model=GenerateQAResponse,
@@ -90,6 +97,8 @@ async def list_qa_sets(
         QASetOut(
             id=i.id,
             project_id=i.project_id,
+            resume_id=i.resume_id,
+            scope=i.scope,
             position=i.position,
             level=i.level,
             status=i.status,
@@ -115,6 +124,8 @@ async def get_qa_set(
     return QASetDetail(
         id=qa_set.id,
         project_id=qa_set.project_id,
+        resume_id=qa_set.resume_id,
+        scope=qa_set.scope,
         position=qa_set.position,
         level=qa_set.level,
         status=qa_set.status,
@@ -139,6 +150,7 @@ async def get_qa_set(
                 ],
                 difficulty=i.difficulty,
                 tags=i.tags or [],
+                follow_up_axes=i.follow_up_axes or [],
             )
             for i in items
         ],
@@ -162,17 +174,33 @@ async def regenerate_qa_set(
         raise HTTPException(status_code=404, detail="not found")
     await repo.set_status(qa_set_id=qa_set.id, status="pending", error=None)
     svc = _service(request)
-    background.add_task(
-        _safe_run,
-        svc,
-        user_id=user.id,
-        project_id=qa_set.project_id,
-        position=qa_set.position,
-        level=qa_set.level,
-    )
+    if qa_set.scope == "resume":
+        if qa_set.resume_id is None:
+            raise HTTPException(status_code=400, detail="qa set missing resume_id")
+        background.add_task(
+            _safe_run_for_resume,
+            svc,
+            user_id=user.id,
+            resume_id=qa_set.resume_id,
+            position=qa_set.position,
+            level=qa_set.level,
+        )
+    else:
+        if qa_set.project_id is None:
+            raise HTTPException(status_code=400, detail="qa set missing project_id")
+        background.add_task(
+            _safe_run,
+            svc,
+            user_id=user.id,
+            project_id=qa_set.project_id,
+            position=qa_set.position,
+            level=qa_set.level,
+        )
     return QASetOut(
         id=qa_set.id,
         project_id=qa_set.project_id,
+        resume_id=qa_set.resume_id,
+        scope=qa_set.scope,
         position=qa_set.position,
         level=qa_set.level,
         status="pending",

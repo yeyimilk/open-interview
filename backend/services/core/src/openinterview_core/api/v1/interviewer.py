@@ -162,6 +162,7 @@ async def create_session(
             "recent_claims": [],
             "current_question": "",
             "current_ideal_answer": "",
+            "thread_state": {},
             **target_extra,
         },
     )
@@ -180,6 +181,7 @@ async def create_session(
                 prev_question="",
                 prev_ideal_answer="",
                 blueprint=blueprint.model_dump(),
+                thread_state={},
             )
             if first.get("chosen_question"):
                 claim_text = first.get("claim")
@@ -197,7 +199,12 @@ async def create_session(
                     user_id=user.id,
                     role="assistant",
                     content=opening,
-                    meta={"opening": True},
+                    meta={
+                        "opening": True,
+                        "next_action": first.get("next_action"),
+                        "follow_up_axis": first.get("follow_up_axis"),
+                        "thread_state": first.get("thread_state"),
+                    },
                 )
                 row = await chat_repo.get_session(
                     user_id=user.id, session_id=sess.id
@@ -216,6 +223,7 @@ async def create_session(
                     new_target["current_ideal_answer"] = first.get(
                         "ideal_answer", ""
                     )
+                    new_target["thread_state"] = first.get("thread_state") or {}
                     row.target = new_target
                 await session.commit()
                 # refresh the local sess view for the response
@@ -336,6 +344,7 @@ async def send_message(
     prev_a = str(target.get("current_ideal_answer") or "")
     recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
     blueprint = target.get("blueprint") if isinstance(target.get("blueprint"), dict) else None
+    thread_state = target.get("thread_state") if isinstance(target.get("thread_state"), dict) else {}
 
     await repo.append_message(
         session_id=session_id, user_id=user.id, role="user", content=body.content
@@ -358,6 +367,7 @@ async def send_message(
                 prev_ideal_answer=prev_a,
                 recent_claims=recent_claims,
                 blueprint=blueprint,
+                thread_state=thread_state,
             ):
                 kind = ev.get("type", "message")
                 if kind == "token":
@@ -378,7 +388,12 @@ async def send_message(
                     user_id=user.id,
                     role="assistant",
                     content=full,
-                    meta={"evaluation": meta.get("evaluation")},
+                    meta={
+                        "evaluation": meta.get("evaluation"),
+                        "next_action": meta.get("next_action"),
+                        "follow_up_axis": meta.get("follow_up_axis"),
+                        "thread_state": meta.get("thread_state"),
+                    },
                 )
                 # Update session.target with new asked_ids and current Q.
                 row = await rrepo.get_session(
@@ -394,6 +409,9 @@ async def send_message(
                     )
                     new_target["current_question"] = meta.get("chosen_question", "")
                     new_target["current_ideal_answer"] = meta.get("ideal_answer", "")
+                    new_target["thread_state"] = meta.get(
+                        "thread_state", new_target.get("thread_state", {})
+                    )
                     row.target = new_target
                 await s.commit()
         except Exception:
@@ -433,6 +451,7 @@ async def send_audio_message(
     prev_a = str(target.get("current_ideal_answer") or "")
     recent_claims = [str(c) for c in (target.get("recent_claims") or [])]
     blueprint = target.get("blueprint") if isinstance(target.get("blueprint"), dict) else None
+    thread_state = target.get("thread_state") if isinstance(target.get("thread_state"), dict) else {}
 
     audio_bytes = await audio.read()
     if not audio_bytes:
@@ -492,6 +511,7 @@ async def send_audio_message(
                 recent_claims=recent_claims,
                 voice_features=voice_features,
                 blueprint=blueprint,
+                thread_state=thread_state,
             ):
                 kind = ev.get("type", "message")
                 if kind == "token":
@@ -512,7 +532,12 @@ async def send_audio_message(
                     user_id=user.id,
                     role="assistant",
                     content=full,
-                    meta={"evaluation": meta.get("evaluation")},
+                    meta={
+                        "evaluation": meta.get("evaluation"),
+                        "next_action": meta.get("next_action"),
+                        "follow_up_axis": meta.get("follow_up_axis"),
+                        "thread_state": meta.get("thread_state"),
+                    },
                 )
                 row = await rrepo.get_session(
                     user_id=user.id, session_id=session_id
@@ -530,6 +555,9 @@ async def send_audio_message(
                     )
                     new_target["current_ideal_answer"] = meta.get(
                         "ideal_answer", ""
+                    )
+                    new_target["thread_state"] = meta.get(
+                        "thread_state", new_target.get("thread_state", {})
                     )
                     row.target = new_target
                 await s.commit()

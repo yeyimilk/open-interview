@@ -239,11 +239,14 @@ export interface QAItemOut {
   evidence: QAEvidence[];
   difficulty: number;
   tags: string[];
+  follow_up_axes: string[];
 }
 
 export interface QASetOut {
   id: string;
-  project_id: string;
+  project_id: string | null;
+  resume_id: string | null;
+  scope: string;
   position: string;
   level: string;
   status: string;

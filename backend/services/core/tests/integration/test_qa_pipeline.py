@@ -13,6 +13,10 @@ pytest.importorskip("aiosqlite")
 
 from openinterview_core.config import Settings
 from openinterview_core.domain.qa import QAGenerationService
+from openinterview_core.domain.question_sets import (
+    QuestionSetGenerationRequest,
+    QuestionSetService,
+)
 from openinterview_core.infra.db import Database
 from openinterview_core.infra.db.qa_repository import SqlQARepository
 from openinterview_core.infra.vector import (
@@ -20,7 +24,7 @@ from openinterview_core.infra.vector import (
     VectorRecord,
     vector_collection_for_user_project,
 )
-from openinterview_db import Base, Project, User
+from openinterview_db import Base, Project, Resume, User
 from openinterview_schemas import (
     ChatCompletionResponse,
     EmbeddingResponse,
@@ -38,7 +42,11 @@ class FakeGateway:
         if "design an interview question plan" in prompt:
             # Planner refinement -> just return original categories.
             return _resp(json.dumps({"shards": []}))
-        if "interview questions" in prompt or "Generate interview questions" in prompt:
+        if (
+            "interview questions" in prompt
+            or "Generate interview questions" in prompt
+            or "high-signal interview" in prompt
+        ):
             # Generator -> include category from prompt so each shard yields a unique question.
             cat_match = re.search(r"CATEGORY:\s*(\w+)", prompt)
             cat = cat_match.group(1) if cat_match else "general"
@@ -50,6 +58,7 @@ class FakeGateway:
                         "evidence_indices": [0],
                         "difficulty": 3,
                         "tags": ["fastapi", cat],
+                        "follow_up_axes": ["implementation_details", "trade-offs"],
                     }
                 ]
             }
@@ -62,6 +71,14 @@ class FakeGateway:
             vectors=[[1.0, 0.0, 0.0, 0.0] for _ in inputs],
             usage=TokenUsage(prompt_tokens=1, total_tokens=1),
         )
+
+
+class FailingGenerationGateway(FakeGateway):
+    async def chat(self, *, user_id, logical_model, messages, **kwargs):
+        prompt = messages[-1].content
+        if "designing an interview question plan" in prompt:
+            return _resp(json.dumps({"shards": []}))
+        raise RuntimeError("generator unavailable")
 
 
 def _resp(content: str) -> ChatCompletionResponse:
@@ -132,5 +149,175 @@ async def test_qa_generation_creates_set_and_items(tmp_path):
     # Evidence is propagated.
     any_with_evidence = any(it.evidence for it in items)
     assert any_with_evidence
+    assert items[0].follow_up_axes[:2] == [
+        "implementation_details",
+        "trade_offs",
+    ]
+
+    await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_question_set_service_generates_resume_set(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path}/resume_qa.db")
+    async with db.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    user_id = uuid4()
+    resume_id = uuid4()
+    async with db.sessionmaker() as s:
+        s.add(User(
+            id=user_id, email="r@x.com", display_name="u",
+            password_hash="x", tier="free", is_admin=False,
+        ))
+        s.add(Resume(
+            id=resume_id,
+            user_id=user_id,
+            original_filename="resume.pdf",
+            content_type="application/pdf",
+            text="Ada Staff SWE",
+            parsed={
+                "name": "Ada",
+                "skills": ["FastAPI"],
+                "claims": [{"text": "Built async API", "section": "experience"}],
+            },
+        ))
+        await s.commit()
+
+    svc = QuestionSetService(
+        sessionmaker=db.sessionmaker,
+        gateway=FakeGateway(),
+        vector_store=InMemoryVectorStore(),
+        max_total_per_set=10,
+    )
+    result = await svc.generate(
+        QuestionSetGenerationRequest(
+            user_id=user_id,
+            resume_id=resume_id,
+            position="swe_generic",
+            level="mid",
+            scope="resume",
+        )
+    )
+
+    async with db.sessionmaker() as s:
+        repo = SqlQARepository(s)
+        qa_set = await repo.get_set(user_id=user_id, qa_set_id=result.qa_set_id)
+        items = await repo.list_items(user_id=user_id, qa_set_id=result.qa_set_id)
+
+    assert qa_set is not None
+    assert qa_set.scope == "resume"
+    assert qa_set.resume_id == resume_id
+    assert qa_set.status == "ready"
+    assert items
+    assert items[0].follow_up_axes
+
+    await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_question_set_service_marks_failed_when_all_shards_fail(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path}/qa_fail.db")
+    async with db.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    user_id = uuid4()
+    project_id = uuid4()
+    async with db.sessionmaker() as s:
+        s.add(User(
+            id=user_id, email="fail@x.com", display_name="u",
+            password_hash="x", tier="free", is_admin=False,
+        ))
+        s.add(Project(
+            id=project_id, user_id=user_id, name="demo",
+            source_type="zip", status="ready",
+            summary="A FastAPI calculator", architecture={"summary": "tiny"},
+        ))
+        await s.commit()
+
+    svc = QuestionSetService(
+        sessionmaker=db.sessionmaker,
+        gateway=FailingGenerationGateway(),
+        vector_store=InMemoryVectorStore(),
+    )
+
+    with pytest.raises(RuntimeError):
+        await svc.generate(
+            QuestionSetGenerationRequest(
+                user_id=user_id,
+                project_id=project_id,
+                position="swe_generic",
+                level="mid",
+                scope="project",
+            )
+        )
+
+    async with db.sessionmaker() as s:
+        repo = SqlQARepository(s)
+        qa_set = await repo.get_or_create_set(
+            user_id=user_id,
+            project_id=project_id,
+            position="swe_generic",
+            level="mid",
+        )
+
+    assert qa_set.status == "failed"
+    assert "all question generation shards failed" in (qa_set.error or "")
+
+    await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_question_set_retry_clears_previous_error(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path}/qa_retry.db")
+    async with db.engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    user_id = uuid4()
+    project_id = uuid4()
+    async with db.sessionmaker() as s:
+        s.add(User(
+            id=user_id, email="retry@x.com", display_name="u",
+            password_hash="x", tier="free", is_admin=False,
+        ))
+        s.add(Project(
+            id=project_id, user_id=user_id, name="demo",
+            source_type="zip", status="ready",
+            summary="A FastAPI calculator", architecture={"summary": "tiny"},
+        ))
+        repo = SqlQARepository(s)
+        qa_set = await repo.get_or_create_set(
+            user_id=user_id,
+            project_id=project_id,
+            position="swe_generic",
+            level="mid",
+        )
+        await repo.set_status(qa_set_id=qa_set.id, status="failed", error="boom")
+        await s.commit()
+
+    svc = QuestionSetService(
+        sessionmaker=db.sessionmaker,
+        gateway=FakeGateway(),
+        vector_store=InMemoryVectorStore(),
+        max_total_per_set=10,
+    )
+    result = await svc.generate(
+        QuestionSetGenerationRequest(
+            user_id=user_id,
+            project_id=project_id,
+            position="swe_generic",
+            level="mid",
+            scope="project",
+        )
+    )
+
+    async with db.sessionmaker() as s:
+        qa_set = await SqlQARepository(s).get_set(
+            user_id=user_id, qa_set_id=result.qa_set_id
+        )
+
+    assert qa_set is not None
+    assert qa_set.status == "ready"
+    assert qa_set.error is None
 
     await db.dispose()
