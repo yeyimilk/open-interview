@@ -289,14 +289,21 @@ Remaining follow-ups:
 
 ## 6. Frontend polish
 
-- **Messaging settings**: real-time status pill (Connected / Pairing
-  / Re-pair needed) instead of polling-only.
-- **Group picker UX**: search + multi-select instead of free-form
-  paste of jids.
-- **Chat history search** across mentor / interviewer / general
-  sessions, with mode + project filters.
-- **Resume detail view** — currently only available via the
-  WhatsApp `/resume <id>` command; build the equivalent in the SPA.
+- **Messaging settings**  ✅ first slice done: connected accounts now show a
+  bridge-backed status pill (`Connected` / `Re-pair needed` / `Unavailable`)
+  and the WhatsApp group picker supports search plus multi-select.
+  Remaining follow-up: replace the lightweight status refresh with a push/SSE
+  stream if the bridge starts emitting connection-change events.
+- **Chat history search**  ✅ first slice done: new SPA history page searches
+  mentor / interviewer / general sessions, hydrates message text on demand,
+  and supports mode + project filters.
+  Remaining follow-up: add server-side full-text search when session volume
+  makes client hydration too expensive.
+- **Resume detail view**  ✅ first slice done: the SPA route now exposes parsed
+  resume details, grounding links, original-file actions, refresh grounding,
+  and start-interview entry points.
+  Remaining follow-up: add richer claim filtering once the parser stores
+  normalized claim categories.
 
 ---
 

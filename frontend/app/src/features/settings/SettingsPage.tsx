@@ -2,6 +2,7 @@ import {
   Brain,
   Check,
   ChevronRight,
+  CircleAlert,
   Eye,
   EyeOff,
   KeyRound,
@@ -14,11 +15,14 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Search,
   ShieldCheck,
   Sun,
   Trash2,
   Unlink,
   User as UserIcon,
+  Wifi,
+  WifiOff,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -28,6 +32,7 @@ import {
   MessagingFilters,
   MessagingGroup,
   MessagingLinkOut,
+  MessagingLinkStatus,
   MessagingPairSession,
   MessagingPluginInfo,
   ModelPreferenceBody,
@@ -1044,11 +1049,36 @@ function LinkCard({
   onUnlinked: () => void;
 }) {
   const [showFilters, setShowFilters] = useState(false);
+  const [status, setStatus] = useState<MessagingLinkStatus | null>(null);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      setStatus(await api.getLinkStatus(link.id));
+    } catch {
+      setStatus({
+        id: link.id,
+        channel: link.channel,
+        state: "unavailable",
+        detail: "status check failed",
+        last_seen_at: link.last_seen_at,
+      });
+    }
+  }, [link.channel, link.id, link.last_seen_at]);
+
+  useEffect(() => {
+    void refreshStatus();
+    const id = window.setInterval(() => void refreshStatus(), 10_000);
+    return () => window.clearInterval(id);
+  }, [refreshStatus]);
+
   return (
     <div className="rounded-lg border">
       <div className="flex items-center justify-between gap-3 p-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium capitalize">{link.channel}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-sm font-medium capitalize">{link.channel}</div>
+            <LinkHealthBadge status={status} fallbackLastSeen={link.last_seen_at} />
+          </div>
           <div className="font-mono text-xs text-muted-foreground truncate">
             {link.display_name
               ? `+${link.display_name} (${link.external_id})`
@@ -1093,11 +1123,67 @@ function LinkCard({
   );
 }
 
+function LinkHealthBadge({
+  status,
+  fallbackLastSeen,
+}: {
+  status: MessagingLinkStatus | null;
+  fallbackLastSeen: string | null;
+}) {
+  const state = status?.state ?? "unavailable";
+  const lastSeen = status?.last_seen_at ?? fallbackLastSeen;
+  const title = lastSeen ? `Last activity ${formatAgo(lastSeen)}` : undefined;
+  if (!status) {
+    return (
+      <Badge variant="muted" title={title}>
+        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+        Checking
+      </Badge>
+    );
+  }
+  if (state === "connected") {
+    return (
+      <Badge variant="success" title={title}>
+        <Wifi className="mr-1 h-3 w-3" />
+        Connected
+      </Badge>
+    );
+  }
+  if (state === "re_pair_needed") {
+    return (
+      <Badge variant="warning" title={status.detail ?? title}>
+        <WifiOff className="mr-1 h-3 w-3" />
+        Re-pair needed
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="muted" title={status.detail ?? title}>
+      <CircleAlert className="mr-1 h-3 w-3" />
+      Unavailable
+    </Badge>
+  );
+}
+
+function formatAgo(value: string): string {
+  const ts = new Date(value).getTime();
+  if (!Number.isFinite(ts)) return "unknown";
+  const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 function FiltersEditor({ link }: { link: MessagingLinkOut }) {
   const [filters, setFilters] = useState<MessagingFilters | null>(null);
   const [groups, setGroups] = useState<MessagingGroup[] | null>(null);
   const [phoneInput, setPhoneInput] = useState("");
   const [inviteInput, setInviteInput] = useState("");
+  const [groupSearch, setGroupSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [savingMode, setSavingMode] = useState(false);
 
@@ -1177,10 +1263,57 @@ function FiltersEditor({ link }: { link: MessagingLinkOut }) {
     }
   }
 
+  const selectedGroupIds = useMemo(
+    () =>
+      new Set(
+        (filters?.rules ?? [])
+          .filter((rule) => rule.kind === "group")
+          .map((rule) => rule.value)
+      ),
+    [filters?.rules]
+  );
+  const filteredGroups = useMemo(() => {
+    if (!groups) return [];
+    const q = groupSearch.trim().toLowerCase();
+    if (!q) return groups;
+    return groups.filter((group) =>
+      `${group.subject} ${group.jid}`.toLowerCase().includes(q)
+    );
+  }, [groups, groupSearch]);
+
   if (!filters) return <div className="text-xs text-muted-foreground">Loading…</div>;
 
   const showRulesEditor =
     filters.mode === "allowlist" || filters.mode === "denylist";
+  const selectedVisibleCount = filteredGroups.filter((group) =>
+    selectedGroupIds.has(group.jid)
+  ).length;
+
+  function toggleGroup(group: MessagingGroup) {
+    if (!filters) return;
+    if (selectedGroupIds.has(group.jid)) {
+      setFilters({
+        ...filters,
+        rules: filters.rules.filter(
+          (rule) => !(rule.kind === "group" && rule.value === group.jid)
+        ),
+      });
+      return;
+    }
+    addRule("group", group.jid, group.subject);
+  }
+
+  function addVisibleGroups() {
+    if (!filters || filteredGroups.length === 0) return;
+    const next = [...filters.rules];
+    for (const group of filteredGroups) {
+      if (next.some((rule) => rule.kind === "group" && rule.value === group.jid)) {
+        continue;
+      }
+      next.push({ kind: "group", value: group.jid, label: group.subject });
+    }
+    setFilters({ ...filters, rules: next });
+  }
 
   return (
     <div className="space-y-4">
@@ -1257,7 +1390,12 @@ function FiltersEditor({ link }: { link: MessagingLinkOut }) {
 
           <div className="space-y-2">
             <div className="flex items-end justify-between gap-2">
-              <Label className="text-xs">Groups</Label>
+              <div className="space-y-0.5">
+                <Label className="text-xs">Groups</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  Search and select every group this mode should include.
+                </p>
+              </div>
               <Button
                 type="button"
                 size="sm"
@@ -1271,36 +1409,76 @@ function FiltersEditor({ link }: { link: MessagingLinkOut }) {
             </div>
 
             {groups && groups.length > 0 && (
-              <div className="rounded border bg-background p-2 max-h-48 overflow-y-auto space-y-1">
-                {groups.map((g) => {
-                  const already = filters.rules.some(
-                    (r) => r.kind === "group" && r.value === g.jid
-                  );
-                  return (
-                    <button
-                      key={g.jid}
-                      type="button"
-                      disabled={already}
-                      onClick={() => addRule("group", g.jid, g.subject)}
-                      className={cn(
-                        "flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs",
-                        already
-                          ? "text-muted-foreground"
-                          : "hover:bg-accent"
-                      )}
-                    >
-                      <span className="truncate">
-                        {g.subject}{" "}
-                        <span className="text-muted-foreground">
-                          ({g.participants_count} members)
-                        </span>
-                      </span>
-                      <span className="text-muted-foreground">
-                        {already ? "added" : "add"}
-                      </span>
-                    </button>
-                  );
-                })}
+              <div className="rounded-md border bg-background">
+                <div className="flex flex-col gap-2 border-b p-2 sm:flex-row sm:items-center">
+                  <div className="relative min-w-0 flex-1">
+                    <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={groupSearch}
+                      onChange={(e) => setGroupSearch(e.target.value)}
+                      placeholder="Search groups by name or jid"
+                      className="pl-8"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={addVisibleGroups}
+                    disabled={filteredGroups.length === 0}
+                  >
+                    <Check className="h-4 w-4" />
+                    Select shown
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground">
+                  <span>
+                    {filteredGroups.length} shown · {selectedGroupIds.size} selected
+                  </span>
+                  {selectedVisibleCount > 0 ? (
+                    <span>{selectedVisibleCount} selected here</span>
+                  ) : null}
+                </div>
+                <div className="max-h-64 overflow-y-auto p-1">
+                  {filteredGroups.length === 0 ? (
+                    <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                      No groups match this search.
+                    </div>
+                  ) : (
+                    filteredGroups.map((g) => {
+                      const checked = selectedGroupIds.has(g.jid);
+                      return (
+                        <label
+                          key={g.jid}
+                          className={cn(
+                            "flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-left text-xs transition-colors",
+                            checked
+                              ? "bg-primary/5 text-foreground"
+                              : "hover:bg-accent"
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleGroup(g)}
+                            className="h-4 w-4 rounded border-input accent-primary"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">
+                              {g.subject}
+                            </span>
+                            <span className="block truncate font-mono text-[11px] text-muted-foreground">
+                              {g.jid}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-muted-foreground">
+                            {g.participants_count} members
+                          </span>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
               </div>
             )}
             {groups && groups.length === 0 && (

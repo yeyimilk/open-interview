@@ -52,6 +52,14 @@ class LinkOut(BaseModel):
     filter_mode: str = "dms_only"
 
 
+class LinkStatusOut(BaseModel):
+    id: UUID
+    channel: str
+    state: str  # connected | re_pair_needed | unavailable
+    detail: str | None = None
+    last_seen_at: datetime | None = None
+
+
 class GroupOut(BaseModel):
     jid: str
     subject: str
@@ -202,6 +210,43 @@ def _whatsapp_plugin(request: Request):
     if item is None:
         raise HTTPException(status_code=404, detail="whatsapp plugin not loaded")
     return item[1]
+
+
+@router.get("/links/{link_id}/status", response_model=LinkStatusOut)
+async def get_link_status(
+    link_id: UUID,
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> LinkStatusOut:
+    sm = request.app.state.db.sessionmaker
+    link = await _user_owns_link(sm, user.id, link_id)
+    if link is None:
+        raise HTTPException(status_code=404, detail="link not found")
+
+    state = "connected"
+    detail: str | None = None
+    if link.channel == "whatsapp":
+        try:
+            plugin = _whatsapp_plugin(request)
+            account_id = plugin.account_for_link_external_id(link.external_id)
+        except HTTPException as e:
+            state = "unavailable"
+            detail = str(e.detail)
+        except Exception as e:  # pragma: no cover
+            state = "unavailable"
+            detail = str(e)
+        else:
+            if account_id is None:
+                state = "re_pair_needed"
+                detail = "bridge has no live socket for this account"
+
+    return LinkStatusOut(
+        id=link.id,
+        channel=link.channel,
+        state=state,
+        detail=detail,
+        last_seen_at=link.last_seen_at,
+    )
 
 
 @router.get("/links/{link_id}/groups", response_model=list[GroupOut])

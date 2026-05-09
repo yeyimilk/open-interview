@@ -10,6 +10,7 @@ import { Toaster } from "./components/ui/sonner";
 import { LoginPage } from "./features/auth/LoginPage";
 import { RegisterPage } from "./features/auth/RegisterPage";
 import { ChatListPage } from "./features/chat/ChatListPage";
+import { ChatHistoryPage } from "./features/chat/ChatHistoryPage";
 import { ChatSessionPage } from "./features/chat/ChatSessionPage";
 import { EvaluationPage } from "./features/interviewer/EvaluationPage";
 import { InterviewerListPage } from "./features/interviewer/InterviewerListPage";
@@ -129,6 +130,14 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <QASetPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="history"
+                element={
+                  <RequireAuth>
+                    <ChatHistoryPage />
                   </RequireAuth>
                 }
               />

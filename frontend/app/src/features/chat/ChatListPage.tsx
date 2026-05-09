@@ -1,4 +1,4 @@
-import { ArrowRight, Loader2, MessageSquare, Plus } from "lucide-react";
+import { ArrowRight, Loader2, MessageSquare, Plus, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -65,51 +65,58 @@ export function ChatListPage() {
         title="Chat"
         description="General-purpose assistant with access to your projects, resumes, and memory. Same agent that powers WhatsApp /chat."
         actions={
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="h-4 w-4" /> New chat
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Start a chat</DialogTitle>
-                <DialogDescription>
-                  Workspace-aware general chat. Ask anything; the assistant
-                  knows what projects and resumes you have on file.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="c-title">Title (optional)</Label>
-                  <Input
-                    id="c-title"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="e.g. Brainstorm side projects, debug a stack trace..."
-                  />
+          <>
+            <Button asChild variant="outline">
+              <Link to="/history">
+                <Search className="h-4 w-4" /> Search history
+              </Link>
+            </Button>
+            <Dialog open={open} onOpenChange={setOpen}>
+              <DialogTrigger asChild>
+                <Button>
+                  <Plus className="h-4 w-4" /> New chat
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Start a chat</DialogTitle>
+                  <DialogDescription>
+                    Workspace-aware general chat. Ask anything; the assistant
+                    knows what projects and resumes you have on file.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="c-title">Title (optional)</Label>
+                    <Input
+                      id="c-title"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      placeholder="e.g. Brainstorm side projects, debug a stack trace..."
+                    />
+                  </div>
                 </div>
-              </div>
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setOpen(false)}
-                >
-                  Cancel
-                </Button>
-                <Button type="button" onClick={start} disabled={busy}>
-                  {busy ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" /> Creating...
-                    </>
-                  ) : (
-                    "Start chat"
-                  )}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="button" onClick={start} disabled={busy}>
+                    {busy ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" /> Creating...
+                      </>
+                    ) : (
+                      "Start chat"
+                    )}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </>
         }
       />
 

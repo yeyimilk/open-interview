@@ -1,11 +1,15 @@
 import {
   ArrowLeft,
   Briefcase,
+  Download,
+  ExternalLink,
   FileText,
   IdCard,
   Link2,
   Loader2,
+  Mic,
   Quote,
+  RefreshCw,
   Sparkles,
   Trash2,
   Wrench,
@@ -13,7 +17,7 @@ import {
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { ClaimMappingOut, ResumeDetail, api } from "../../api/client";
+import { ClaimMappingOut, ProjectOut, ResumeDetail, api } from "../../api/client";
 import { PageHeader } from "../../components/common/PageHeader";
 import { StatusPill } from "../../components/common/StatusPill";
 import {
@@ -38,15 +42,19 @@ export function ResumeDetailPage() {
   const nav = useNavigate();
   const [resume, setResume] = useState<ResumeDetail | null>(null);
   const [mappings, setMappings] = useState<ClaimMappingOut[]>([]);
+  const [projects, setProjects] = useState<ProjectOut[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
   async function load() {
     try {
-      const [r, m] = await Promise.all([
+      const [r, m, p] = await Promise.all([
         api.getResume(id),
         api.listClaimMappings(id),
+        api.listProjects(),
       ]);
       setResume(r);
       setMappings(m);
+      setProjects(p);
     } catch (e) {
       toast.error("Failed to load", { description: (e as Error).message });
     }
@@ -74,6 +82,56 @@ export function ResumeDetailPage() {
     }
   }
 
+  async function openOriginal() {
+    try {
+      const { blob } = await api.fetchResumeFile(id, true);
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank", "noopener,noreferrer");
+      if (!win) {
+        toast.error("Pop-up blocked", {
+          description: "Allow pop-ups for this site to open the file.",
+        });
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      toast.error("Could not open file", { description: (e as Error).message });
+    }
+  }
+
+  async function downloadOriginal() {
+    try {
+      const { blob, filename } = await api.fetchResumeFile(id, false);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      toast.error("Download failed", { description: (e as Error).message });
+    }
+  }
+
+  async function refreshGrounding() {
+    setRefreshing(true);
+    try {
+      await api.runResumeNow(
+        id,
+        projects.filter((project) => project.status === "ready").map((project) => project.id)
+      );
+      toast.success("Resume processing started", {
+        description: "Claim grounding will refresh in the background.",
+      });
+      await load();
+    } catch (e) {
+      toast.error("Refresh failed", { description: (e as Error).message });
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   if (!resume) {
     return (
       <div className="space-y-3">
@@ -94,6 +152,9 @@ export function ResumeDetailPage() {
       }
     | null;
   const ready = !!parsed;
+  const projectNameById = Object.fromEntries(
+    projects.map((project) => [project.id, project.name])
+  );
 
   return (
     <div>
@@ -109,12 +170,35 @@ export function ResumeDetailPage() {
         title={resume.original_filename}
         description={`Uploaded ${new Date(resume.created_at).toLocaleString()}`}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {ready ? (
               <StatusPill status="ready" />
             ) : (
               <StatusPill status="running" />
             )}
+            <Button asChild>
+              <Link to={`/interviewer/start?resume_id=${id}`}>
+                <Mic className="h-4 w-4" /> Start interview
+              </Link>
+            </Button>
+            <Button variant="outline" onClick={openOriginal}>
+              <ExternalLink className="h-4 w-4" /> Open file
+            </Button>
+            <Button variant="outline" onClick={downloadOriginal}>
+              <Download className="h-4 w-4" /> Download
+            </Button>
+            <Button
+              variant="outline"
+              onClick={refreshGrounding}
+              disabled={refreshing || projects.length === 0}
+            >
+              {refreshing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Refresh grounding
+            </Button>
             <Button
               variant="ghost"
               className="text-destructive hover:text-destructive"
@@ -316,14 +400,20 @@ export function ResumeDetailPage() {
         </div>
 
         <div className="space-y-4 md:sticky md:top-4">
-          <GroundingCard mappings={mappings} />
+          <GroundingCard mappings={mappings} projectNameById={projectNameById} />
         </div>
       </div>
     </div>
   );
 }
 
-function GroundingCard({ mappings }: { mappings: ClaimMappingOut[] }) {
+function GroundingCard({
+  mappings,
+  projectNameById,
+}: {
+  mappings: ClaimMappingOut[];
+  projectNameById: Record<string, string>;
+}) {
   const sorted = [...mappings].sort((a, b) => b.confidence - a.confidence);
   return (
     <Card>
@@ -342,9 +432,22 @@ function GroundingCard({ mappings }: { mappings: ClaimMappingOut[] }) {
           <ul className="space-y-3">
             {sorted.map((m) => {
               const pct = Math.max(0, Math.min(1, m.confidence));
+              const projectName =
+                (m.project_id && projectNameById[m.project_id]) || null;
               return (
                 <li key={m.id} className="space-y-1.5">
-                  <p className="text-sm leading-snug">{m.claim}</p>
+                  <div className="space-y-1">
+                    <p className="text-sm leading-snug">{m.claim}</p>
+                    {projectName ? (
+                      <Link
+                        to={`/projects/${m.project_id}`}
+                        className="inline-flex max-w-full items-center gap-1 truncate text-xs font-medium text-primary hover:underline"
+                      >
+                        <Briefcase className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{projectName}</span>
+                      </Link>
+                    ) : null}
+                  </div>
                   <div className="flex items-center gap-2">
                     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
                       <div

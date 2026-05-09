@@ -801,6 +801,8 @@ export const api = {
     request<MessagingLinkOut[]>("/messaging/links"),
   deleteMessagingLink: (id: string) =>
     request<void>(`/messaging/links/${id}`, { method: "DELETE" }),
+  getLinkStatus: (id: string) =>
+    request<MessagingLinkStatus>(`/messaging/links/${id}/status`),
   listLinkGroups: (id: string) =>
     request<MessagingGroup[]>(`/messaging/links/${id}/groups`),
   resolveLinkInvite: (id: string, code: string) =>
@@ -859,6 +861,14 @@ export interface MessagingLinkOut {
   last_seen_at: string | null;
   created_at: string;
   filter_mode: "dms_only" | "allowlist" | "denylist" | "all";
+}
+
+export interface MessagingLinkStatus {
+  id: string;
+  channel: string;
+  state: "connected" | "re_pair_needed" | "unavailable";
+  detail: string | null;
+  last_seen_at: string | null;
 }
 
 // ---------- SSE streaming helper ----------
