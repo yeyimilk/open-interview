@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Protocol
 from uuid import UUID
 
@@ -92,6 +93,8 @@ class InProcessRetrievalService:
                 chunks.extend(await self._qa_chunks(request))
 
         deduped = _dedupe(chunks)
+        for chunk in deduped:
+            chunk.score = _hybrid_score(request, chunk)
         deduped.sort(key=lambda c: c.score, reverse=True)
         if len(deduped) > request.top_k:
             deduped = deduped[: request.top_k]
@@ -203,13 +206,21 @@ class InProcessRetrievalService:
                         metadata=dict(m.metadata or {}),
                     )
                     for m in matches
+                    if _memory_project_allowed(m.metadata or {}, request.project_ids)
                 ]
             except Exception:
                 pass
         async with self._sm() as s:
-            rows = await SqlMemoryRepository(s).list_long_term(
-                user_id=request.user_id, limit=limit
-            )
+            repo = SqlMemoryRepository(s)
+            if request.project_ids:
+                rows = await repo.list_long_term(user_id=request.user_id, limit=limit)
+                rows = [
+                    r
+                    for r in rows
+                    if r.project_id is None or r.project_id in set(request.project_ids)
+                ][:limit]
+            else:
+                rows = await repo.list_long_term(user_id=request.user_id, limit=limit)
             rows_by_id = {str(r.id): r for r in rows}
         return [
             RetrievedChunk(
@@ -219,7 +230,13 @@ class InProcessRetrievalService:
                 text=row.content,
                 score=float(row.weight or 0.0),
                 citation=Citation(source=RetrievalSource.long_term_memory, title=row.kind),
-                metadata={"kind": row.kind, "weight": row.weight},
+                metadata={
+                    "kind": row.kind,
+                    "weight": row.weight,
+                    "pinned": row.pinned,
+                    "project_id": str(row.project_id) if row.project_id else "",
+                    "created_at": row.created_at.isoformat(),
+                },
             )
             for rid, row in rows_by_id.items()
         ]
@@ -480,6 +497,32 @@ def _dedupe(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
     return out
 
 
+_SOURCE_PRIORS = {
+    RetrievalSource.working_memory: 0.14,
+    RetrievalSource.project: 0.12,
+    RetrievalSource.resume_claim: 0.10,
+    RetrievalSource.qa: 0.08,
+    RetrievalSource.common_kb: 0.05,
+    RetrievalSource.long_term_memory: 0.05,
+    RetrievalSource.resume: 0.03,
+    RetrievalSource.episodic_memory: 0.02,
+}
+
+
+def _hybrid_score(request: RetrieveRequest, chunk: RetrievedChunk) -> float:
+    """Blend vector/SQL score with cheap lexical and source signals.
+
+    This stays provider-neutral and deterministic while giving exact topic
+    matches a chance to beat weak vector hits.
+    """
+    base = max(0.0, min(1.0, float(chunk.score or 0.0)))
+    keyword = _keyword_score(request.query, " ".join([chunk.title or "", chunk.text]), base=0.0)
+    prior = _SOURCE_PRIORS.get(chunk.source, 0.0)
+    pinned = 0.06 if chunk.metadata.get("pinned") is True else 0.0
+    recency = _recency_boost(chunk.metadata.get("created_at"))
+    return max(0.0, min(1.0, (base * 0.70) + (keyword * 0.18) + prior + pinned + recency))
+
+
 def _context_text(chunks: list[RetrievedChunk], budget: int) -> str:
     parts: list[str] = []
     used = 0
@@ -552,6 +595,32 @@ def _keyword_score(query: str, text: str, *, base: float) -> float:
     t = text.lower()
     hits = sum(1 for w in q if w in t)
     return min(1.0, base + 0.05 * hits)
+
+
+def _memory_project_allowed(metadata: dict, project_ids: list[UUID] | None) -> bool:
+    if not project_ids:
+        return True
+    raw = str(metadata.get("project_id") or "")
+    return not raw or raw in {str(pid) for pid in project_ids}
+
+
+def _recency_boost(value) -> float:
+    if not value:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400)
+    if age_days <= 7:
+        return 0.04
+    if age_days <= 30:
+        return 0.025
+    if age_days <= 90:
+        return 0.01
+    return 0.0
 
 
 def _int_or_none(value) -> int | None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import Boolean, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -33,9 +33,13 @@ class LongTermMemory(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "long_term_memories"
 
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, nullable=False)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)  # strength|gap|preference|fact
     content: Mapped[str] = mapped_column(Text, nullable=False)
     weight: Mapped[float] = mapped_column(default=1.0, nullable=False)
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     meta: Mapped[Any] = mapped_column(JsonType, nullable=True)
     embedding_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
     source_session_id: Mapped[uuid.UUID | None] = mapped_column(

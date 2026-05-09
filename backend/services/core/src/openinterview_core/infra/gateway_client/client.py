@@ -27,6 +27,7 @@ from openinterview_schemas import (
     VoiceAnalysisResponse,
 )
 from openinterview_logging import get_logger
+from ...infra.tracing import current_trace_headers
 
 # (user_id, role) -> ProviderOverride | None. The role is one of "chat",
 # "embedding", "transcription", "voice-analysis". The resolver is awaited
@@ -70,7 +71,11 @@ class GatewayClient:
             return None
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+            **current_trace_headers(),
+        }
 
     async def _post(self, path: str, body: dict, *, operation: str = "gateway_post") -> dict:
         url = f"{self._base}{path}"

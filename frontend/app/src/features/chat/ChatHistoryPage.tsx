@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
-  ChatMessageOut,
+  ChatHistorySearchResult,
   ChatSessionOut,
   ProjectOut,
   api,
@@ -71,8 +71,8 @@ export function ChatHistoryPage() {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<ModeFilter>(ALL);
   const [projectId, setProjectId] = useState(ALL);
-  const [messageCache, setMessageCache] = useState<Record<string, string>>({});
   const [searchingMessages, setSearchingMessages] = useState(false);
+  const [serverResults, setServerResults] = useState<ChatHistorySearchResult[]>([]);
 
   async function load() {
     try {
@@ -109,43 +109,31 @@ export function ChatHistoryPage() {
   }, []);
 
   useEffect(() => {
-    if (!sessions || query.trim().length < 2) {
-      setSearchingMessages(false);
-      return;
-    }
-    const missing = sessions.filter((session) => !(session.id in messageCache));
-    if (missing.length === 0) {
-      setSearchingMessages(false);
-      return;
-    }
     let cancelled = false;
-
-    async function hydrateMessages() {
+    async function search() {
       setSearchingMessages(true);
-      const next: Record<string, string> = {};
-      for (const session of missing.slice(0, 80)) {
-        if (cancelled) break;
-        try {
-          const messages = await listMessages(session);
-          if (cancelled) break;
-          next[session.id] = messages
-            .map((m) => `${m.role}: ${m.content}`)
-            .join("\n");
-        } catch {
-          next[session.id] = "";
+      try {
+        const rows = await api.searchChatHistory({
+          q: query,
+          mode,
+          project_id: projectId,
+          limit: 200,
+        });
+        if (!cancelled) setServerResults(rows);
+      } catch (e) {
+        if (!cancelled) {
+          toast.error("Search failed", { description: (e as Error).message });
         }
-      }
-      if (!cancelled) {
-        setMessageCache((prev) => ({ ...prev, ...next }));
-        setSearchingMessages(false);
+      } finally {
+        if (!cancelled) setSearchingMessages(false);
       }
     }
-
-    void hydrateMessages();
+    const t = setTimeout(() => void search(), 180);
     return () => {
       cancelled = true;
+      clearTimeout(t);
     };
-  }, [messageCache, query, sessions]);
+  }, [mode, projectId, query, sessions]);
 
   const projectNameById = useMemo(() => {
     const map: Record<string, string> = {};
@@ -154,37 +142,16 @@ export function ChatHistoryPage() {
   }, [projects]);
 
   const results = useMemo(() => {
-    const q = normalize(query);
-    return (sessions ?? [])
-      .filter((session) => mode === ALL || session.historyMode === mode)
-      .filter((session) => {
-        if (projectId === ALL) return true;
-        return getProjectId(session) === projectId;
-      })
-      .map((session) => {
+    return serverResults.map((row) => {
+        const session = { ...row.session, historyMode: row.history_mode as HistoryMode };
         const projectName = projectNameById[getProjectId(session) ?? ""] ?? null;
-        const messageText = messageCache[session.id] ?? "";
-        const searchable = normalize(
-          [
-            session.title,
-            session.status,
-            session.historyMode,
-            projectName,
-            targetText(session),
-            messageText,
-          ]
-            .filter(Boolean)
-            .join(" ")
-        );
         return {
           session,
           projectName,
-          snippet: q ? makeSnippet(messageText, query) : "",
-          searchable,
+          snippet: row.snippet,
         };
-      })
-      .filter((row) => !q || row.searchable.includes(q));
-  }, [messageCache, mode, projectId, projectNameById, query, sessions]);
+      });
+  }, [projectNameById, serverResults]);
 
   return (
     <div>
@@ -257,7 +224,7 @@ export function ChatHistoryPage() {
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>{results.length} sessions</span>
             {searchingMessages ? (
-              <span>Searching message text...</span>
+              <span>Searching server-side index...</span>
             ) : query.trim().length >= 2 ? (
               <span>Message text included</span>
             ) : null}
@@ -325,16 +292,6 @@ function HistoryRow({
   );
 }
 
-async function listMessages(session: HistorySession): Promise<ChatMessageOut[]> {
-  if (session.historyMode === "mentor") {
-    return api.listMentorMessages(session.id);
-  }
-  if (session.historyMode === "interviewer") {
-    return api.listInterviewerMessages(session.id);
-  }
-  return api.listGeneralMessages(session.id);
-}
-
 function getProjectId(session: HistorySession): string | null {
   if (session.project_id) return session.project_id;
   const target = session.target;
@@ -360,21 +317,4 @@ function targetText(session: HistorySession): string {
       : "",
   ].filter(Boolean);
   return parts.join(" · ");
-}
-
-function normalize(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-function makeSnippet(text: string, query: string): string {
-  const q = query.trim().toLowerCase();
-  if (!q || !text) return "";
-  const lower = text.toLowerCase();
-  const idx = lower.indexOf(q);
-  if (idx === -1) return "";
-  const start = Math.max(0, idx - 90);
-  const end = Math.min(text.length, idx + q.length + 140);
-  const prefix = start > 0 ? "..." : "";
-  const suffix = end < text.length ? "..." : "";
-  return `${prefix}${text.slice(start, end).replace(/\s+/g, " ")}${suffix}`;
 }

@@ -43,11 +43,14 @@ from .model_prefs import (
 from .qa import (
     GenerateQARequest,
     GenerateQAResponse,
+    QAGenerationRunOut,
     QAEvidence,
     QAItemOut,
+    QASetReviewRequest,
     QASetDetail,
     QASetOut,
 )
+from .memory import LongTermMemoryOut, LongTermMemoryUpdate
 from .common_kb import (
     CommonKBDocumentBatchDeleteRequest,
     CommonKBDocumentBatchDeleteResponse,
@@ -74,6 +77,7 @@ from .retrieval import (
     RetrievalSource,
 )
 from .chat import (
+    ChatHistorySearchResult,
     ChatMessageOut,
     ChatSessionOut,
     CreateGeneralSessionRequest,
@@ -137,8 +141,12 @@ __all__ = [
     "QAItemOut",
     "QASetOut",
     "QASetDetail",
+    "QAGenerationRunOut",
+    "QASetReviewRequest",
     "GenerateQARequest",
     "GenerateQAResponse",
+    "LongTermMemoryOut",
+    "LongTermMemoryUpdate",
     "CommonKBSpaceCreate",
     "CommonKBSpaceOut",
     "CommonKBSourceCreate",
@@ -161,6 +169,7 @@ __all__ = [
     "RetrievalPurpose",
     "RetrievalSource",
     "ChatSessionOut",
+    "ChatHistorySearchResult",
     "ChatMessageOut",
     "CreateMentorSessionRequest",
     "SendMentorMessageRequest",

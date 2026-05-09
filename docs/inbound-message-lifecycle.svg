@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="260" viewBox="0 0 1040 260" role="img" aria-labelledby="title desc">
+  <title id="title">Inbound message lifecycle</title>
+  <desc id="desc">Messenger inbound flow from provider webhook through kernel dispatch and DeliveryGuard send.</desc>
+  <defs>
+    <style>
+      .box { fill: #f8fafc; stroke: #334155; stroke-width: 1.5; rx: 8; }
+      .core { fill: #eef6ff; stroke: #2563eb; }
+      .guard { fill: #fff7ed; stroke: #ea580c; }
+      .text { font: 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .small { font-size: 12px; fill: #475569; }
+      .arrow { stroke: #64748b; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+    </marker>
+  </defs>
+
+  <rect x="20" y="85" width="120" height="70" class="box" />
+  <text x="80" y="115" text-anchor="middle" class="text">Provider</text>
+  <text x="80" y="135" text-anchor="middle" class="small">webhook</text>
+
+  <rect x="175" y="85" width="120" height="70" class="box" />
+  <text x="235" y="115" text-anchor="middle" class="text">Plugin</text>
+  <text x="235" y="135" text-anchor="middle" class="small">parse payload</text>
+
+  <rect x="330" y="85" width="120" height="70" class="core box" />
+  <text x="390" y="108" text-anchor="middle" class="text">Resolve</text>
+  <text x="390" y="128" text-anchor="middle" class="small">link, dedup,</text>
+  <text x="390" y="145" text-anchor="middle" class="small">filters</text>
+
+  <rect x="485" y="85" width="120" height="70" class="core box" />
+  <text x="545" y="108" text-anchor="middle" class="text">Command</text>
+  <text x="545" y="128" text-anchor="middle" class="small">slash command</text>
+  <text x="545" y="145" text-anchor="middle" class="small">or dispatch</text>
+
+  <rect x="640" y="35" width="135" height="70" class="core box" />
+  <text x="707.5" y="65" text-anchor="middle" class="text">Mentor</text>
+  <text x="707.5" y="85" text-anchor="middle" class="small">agent turn</text>
+
+  <rect x="640" y="155" width="135" height="70" class="core box" />
+  <text x="707.5" y="185" text-anchor="middle" class="text">Interviewer</text>
+  <text x="707.5" y="205" text-anchor="middle" class="small">or general chat</text>
+
+  <rect x="815" y="85" width="120" height="70" class="guard box" />
+  <text x="875" y="108" text-anchor="middle" class="text">DeliveryGuard</text>
+  <text x="875" y="128" text-anchor="middle" class="small">rate, repeat,</text>
+  <text x="875" y="145" text-anchor="middle" class="small">chunk pace</text>
+
+  <rect x="970" y="85" width="50" height="70" class="box" />
+  <text x="995" y="115" text-anchor="middle" class="text">Send</text>
+  <text x="995" y="135" text-anchor="middle" class="small">text</text>
+
+  <path d="M140 120 L175 120" class="arrow" />
+  <path d="M295 120 L330 120" class="arrow" />
+  <path d="M450 120 L485 120" class="arrow" />
+  <path d="M605 110 C625 85, 620 70, 640 70" class="arrow" />
+  <path d="M605 130 C625 155, 620 190, 640 190" class="arrow" />
+  <path d="M775 70 C795 75, 800 95, 815 105" class="arrow" />
+  <path d="M775 190 C795 185, 800 145, 815 135" class="arrow" />
+  <path d="M935 120 L970 120" class="arrow" />
+</svg>

@@ -35,6 +35,13 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
 import { Skeleton } from "../../components/ui/skeleton";
 
 export function ResumeDetailPage() {
@@ -414,7 +421,14 @@ function GroundingCard({
   mappings: ClaimMappingOut[];
   projectNameById: Record<string, string>;
 }) {
-  const sorted = [...mappings].sort((a, b) => b.confidence - a.confidence);
+  const [category, setCategory] = useState("all");
+  const [section, setSection] = useState("all");
+  const categories = Array.from(new Set(mappings.map((m) => m.category).filter(Boolean) as string[]));
+  const sections = Array.from(new Set(mappings.map((m) => m.section).filter(Boolean) as string[]));
+  const sorted = [...mappings]
+    .filter((m) => category === "all" || m.category === category)
+    .filter((m) => section === "all" || m.section === section)
+    .sort((a, b) => b.confidence - a.confidence);
   return (
     <Card>
       <CardHeader>
@@ -424,6 +438,34 @@ function GroundingCard({
         <CardDescription>Claim ↔ project code matches.</CardDescription>
       </CardHeader>
       <CardContent>
+        <div className="mb-3 grid gap-2 sm:grid-cols-2">
+          <Select value={category} onValueChange={setCategory}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All categories</SelectItem>
+              {categories.map((value) => (
+                <SelectItem key={value} value={value}>
+                  {value.replace(/_/g, " ")}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={section} onValueChange={setSection}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All sections</SelectItem>
+              {sections.map((value) => (
+                <SelectItem key={value} value={value}>
+                  {value.replace(/_/g, " ")}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         {sorted.length === 0 ? (
           <p className="text-sm text-muted-foreground italic">
             No matches yet. Grounding runs in the background after upload.
@@ -447,6 +489,10 @@ function GroundingCard({
                         <span className="truncate">{projectName}</span>
                       </Link>
                     ) : null}
+                    <div className="flex flex-wrap gap-1">
+                      {m.category ? <Badge variant="outline">{m.category.replace(/_/g, " ")}</Badge> : null}
+                      {m.section ? <Badge variant="muted">{m.section}</Badge> : null}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">

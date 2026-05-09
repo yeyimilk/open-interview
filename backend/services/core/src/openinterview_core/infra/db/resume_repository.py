@@ -60,17 +60,22 @@ class SqlResumeRepository:
         *,
         user_id: UUID,
         resume_id: UUID,
-        mappings: list[tuple[str, UUID | None, list[dict] | None, int]],
+        mappings: list[tuple],
     ) -> None:
         await self._s.execute(
             delete(ClaimMapping).where(ClaimMapping.resume_id == resume_id)
         )
-        for claim, project_id, grounding, confidence in mappings:
+        for raw in mappings:
+            claim, project_id, grounding, confidence = raw[:4]
+            section = raw[4] if len(raw) > 4 else None
+            category = raw[5] if len(raw) > 5 else None
             self._s.add(
                 ClaimMapping(
                     user_id=user_id,
                     resume_id=resume_id,
                     claim=claim,
+                    section=section,
+                    category=category,
                     project_id=project_id,
                     grounding=grounding,
                     confidence=confidence,

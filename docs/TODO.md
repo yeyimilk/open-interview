@@ -6,6 +6,11 @@ pick up, open an issue first so we can discuss the shape before code.
 
 Last updated: 2026-05-09
 
+Implementation note: sections 2-8 have been implemented in the current
+non-Messenger backlog branch. Section 1 remains intentionally out of scope.
+GitHub issue creation could not be done from this workspace because the `gh`
+CLI is not installed.
+
 ---
 
 ## 1. Messenger channels

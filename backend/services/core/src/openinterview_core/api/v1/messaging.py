@@ -8,15 +8,19 @@ phone number.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openinterview_db import User
 
+from ..sse import sse_format
 from ...domain.messengers.sdk.filter_store import MessengerFilterStore
 from ...domain.messengers.sdk.session_store import MessengerLinkStore
 from ...infra.db import get_session_dep
@@ -212,11 +216,10 @@ def _whatsapp_plugin(request: Request):
     return item[1]
 
 
-@router.get("/links/{link_id}/status", response_model=LinkStatusOut)
-async def get_link_status(
+async def _link_status(
     link_id: UUID,
     request: Request,
-    user: User = Depends(get_current_user),
+    user: User,
 ) -> LinkStatusOut:
     sm = request.app.state.db.sessionmaker
     link = await _user_owns_link(sm, user.id, link_id)
@@ -247,6 +250,35 @@ async def get_link_status(
         detail=detail,
         last_seen_at=link.last_seen_at,
     )
+
+
+@router.get("/links/{link_id}/status", response_model=LinkStatusOut)
+async def get_link_status(
+    link_id: UUID,
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> LinkStatusOut:
+    return await _link_status(link_id, request, user)
+
+
+@router.get("/links/{link_id}/status/stream")
+async def stream_link_status(
+    link_id: UUID,
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    async def _events():
+        last_payload: str | None = None
+        while not await request.is_disconnected():
+            status = await _link_status(link_id, request, user)
+            payload = status.model_dump(mode="json")
+            encoded = json.dumps(payload, sort_keys=True)
+            if encoded != last_payload:
+                yield sse_format("status", payload)
+                last_payload = encoded
+            await asyncio.sleep(10)
+
+    return StreamingResponse(_events(), media_type="text/event-stream")
 
 
 @router.get("/links/{link_id}/groups", response_model=list[GroupOut])

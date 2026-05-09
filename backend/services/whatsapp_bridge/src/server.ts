@@ -6,16 +6,21 @@ import { BaileysDriver } from "./baileys-driver.js";
 import { loadConfig } from "./config.js";
 import { AccountManager } from "./manager.js";
 import { registerRoutes } from "./routes.js";
+import { configureTracing, shutdownTracing } from "./tracing.js";
 import { HttpWebhook } from "./webhook.js";
 
 export async function buildApp() {
   const config = loadConfig();
+  configureTracing(config);
   const manager = new AccountManager(
     config,
     (accountId, dataDir) => new BaileysDriver(accountId, dataDir),
     new HttpWebhook()
   );
   const app = Fastify({ logger: { level: "info" } });
+  app.addHook("onClose", async () => {
+    await shutdownTracing();
+  });
   registerRoutes(app, { config, manager });
   return { app, config, manager };
 }

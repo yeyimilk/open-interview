@@ -3,7 +3,25 @@
 tiers:
   free:
     rate_limit_rpm: 20
+    delivery:
+      rate_per_second: 1.0
+      burst: 8
+      recent_window: 3
+      chunk_pause_s: 0.8
+      max_chars_per_chunk: 1600
   paid:
     rate_limit_rpm: 120
+    delivery:
+      rate_per_second: 2.0
+      burst: 12
+      recent_window: 3
+      chunk_pause_s: 0.35
+      max_chars_per_chunk: 2400
   admin:
     rate_limit_rpm: 600
+    delivery:
+      rate_per_second: 4.0
+      burst: 20
+      recent_window: 4
+      chunk_pause_s: 0.2
+      max_chars_per_chunk: 3200

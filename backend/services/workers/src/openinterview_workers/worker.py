@@ -7,6 +7,7 @@ job and the runtime is ready.
 from __future__ import annotations
 
 import os
+import asyncio
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -168,14 +169,18 @@ async def generate_project_qa(
     project_id: str,
     position: str,
     level: str,
+    _traceparent: str | None = None,
 ) -> str:
+    _log_traceparent(_traceparent)
     db, _blob, svc = await _qa_service()
     try:
-        await svc.run(
-            user_id=UUID(user_id),
-            project_id=UUID(project_id),
-            position=position,
-            level=level,
+        await _retry(
+            lambda: svc.run(
+                user_id=UUID(user_id),
+                project_id=UUID(project_id),
+                position=position,
+                level=level,
+            )
         )
         return "ok"
     finally:
@@ -188,14 +193,18 @@ async def generate_resume_qa(
     resume_id: str,
     position: str,
     level: str,
+    _traceparent: str | None = None,
 ) -> str:
+    _log_traceparent(_traceparent)
     db, _blob, svc = await _qa_service()
     try:
-        await svc.run_for_resume(
-            user_id=UUID(user_id),
-            resume_id=UUID(resume_id),
-            position=position,
-            level=level,
+        await _retry(
+            lambda: svc.run_for_resume(
+                user_id=UUID(user_id),
+                resume_id=UUID(resume_id),
+                position=position,
+                level=level,
+            )
         )
         return "ok"
     finally:
@@ -206,6 +215,7 @@ class WorkerSettings:
     redis_settings = _redis_settings_from_env()
     max_jobs = int(os.getenv("ARQ_MAX_JOBS", "3"))
     job_timeout = int(os.getenv("ARQ_JOB_TIMEOUT_SECONDS", "900"))
+    max_tries = int(os.getenv("ARQ_MAX_TRIES", "3"))
     functions = [
         ping,
         process_common_kb_document,
@@ -221,6 +231,24 @@ class WorkerSettings:
 def main() -> None:
     configure_logging(level=os.getenv("LOG_LEVEL", "INFO"))
     log.info("worker_module_loaded")
+
+
+async def _retry(call, *, attempts: int | None = None):
+    max_attempts = attempts or int(os.getenv("QA_JOB_ATTEMPTS", "3"))
+    last: Exception | None = None
+    for i in range(max(1, max_attempts)):
+        try:
+            return await call()
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if i < max_attempts - 1:
+                await asyncio.sleep(min(30, 2 ** i))
+    raise last or RuntimeError("retry failed")
+
+
+def _log_traceparent(traceparent: str | None) -> None:
+    if traceparent:
+        log.info("worker_trace_context_received", traceparent=traceparent)
 
 
 if __name__ == "__main__":

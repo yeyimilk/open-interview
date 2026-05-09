@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 class Claim:
     text: str
     section: str | None = None  # experience | projects | skills | education
+    category: str | None = None  # impact | leadership | technical_depth | collaboration | delivery
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,8 @@ class ParsedResume:
 @dataclass(frozen=True)
 class ResumeClaimMapping:
     claim: str
-    project_id: str | None
+    project_id: str | None = None
     grounding: list[dict] = field(default_factory=list)  # [{rel_path, start_line, end_line, evidence}]
     confidence: int = 0  # 0..100
+    section: str | None = None
+    category: str | None = None

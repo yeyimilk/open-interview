@@ -101,8 +101,9 @@ class LLMResumeParser(ResumeParser):
             "Parse this resume into STRICT JSON with keys: name, contacts (object), "
             "skills (list[str]), experience (list of {title, company, period, bullets:[str]}), "
             "projects (list of {name, summary, bullets:[str]}), education (list), "
-            "claims (list of objects {text, section}) where each claim is a single concrete "
-            "achievement worth verifying in an interview. JSON only, no prose.\n\n"
+            "claims (list of objects {text, section, category}) where each claim is a single concrete "
+            "achievement worth verifying in an interview. category must be one of: impact, "
+            "technical_depth, leadership, collaboration, delivery, ownership, other. JSON only, no prose.\n\n"
             f"RESUME:\n{text[:12000]}"
         )
         r = await self._gw.chat(
@@ -115,9 +116,15 @@ class LLMResumeParser(ResumeParser):
         claims = []
         for c in claims_raw:
             if isinstance(c, dict) and c.get("text"):
-                claims.append(Claim(text=str(c["text"]), section=str(c.get("section") or "") or None))
+                claims.append(
+                    Claim(
+                        text=str(c["text"]),
+                        section=str(c.get("section") or "") or None,
+                        category=_claim_category(c.get("category"), c.get("text")),
+                    )
+                )
             elif isinstance(c, str):
-                claims.append(Claim(text=c))
+                claims.append(Claim(text=c, category=_claim_category(None, c)))
         return ParsedResume(
             raw_text=text,
             name=str(data.get("name") or "") or None,
@@ -140,3 +147,20 @@ def _safe_json(text: str, *, default):
         return json.loads(cleaned)
     except (json.JSONDecodeError, ValueError):
         return default
+
+
+def _claim_category(raw, text) -> str:
+    allowed = {"impact", "technical_depth", "leadership", "collaboration", "delivery", "ownership", "other"}
+    value = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if value in allowed:
+        return value
+    low = str(text or "").lower()
+    if any(x in low for x in ("latency", "scale", "architecture", "migrated", "built", "designed", "optimized")):
+        return "technical_depth"
+    if any(x in low for x in ("led", "owned", "drove", "mentored")):
+        return "ownership"
+    if any(x in low for x in ("revenue", "conversion", "saved", "reduced", "increased", "%")):
+        return "impact"
+    if any(x in low for x in ("stakeholder", "cross-functional", "partnered", "collaborated")):
+        return "collaboration"
+    return "other"

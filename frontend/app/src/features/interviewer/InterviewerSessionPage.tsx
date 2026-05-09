@@ -12,6 +12,7 @@ import { LiveAudioChat } from "../chat/live/LiveAudioChat";
 import { EditableTitle } from "../../components/common/EditableTitle";
 import { PageHeader } from "../../components/common/PageHeader";
 import { StatusPill } from "../../components/common/StatusPill";
+import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent } from "../../components/ui/card";
 import { Progress } from "../../components/ui/progress";
@@ -102,6 +103,7 @@ export function InterviewerSessionPage() {
   }
 
   const target = (session?.target || {}) as any;
+  const latestAction = latestAssistantAction(messages);
   const askedCount = (target.asked_ids || []).length;
   const planned: number = target.n_questions || 0;
   const progress = planned > 0 ? Math.min(100, (askedCount / planned) * 100) : 0;
@@ -165,6 +167,14 @@ export function InterviewerSessionPage() {
           <Progress value={progress} />
         </div>
       )}
+      {latestAction ? (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{latestAction.replace(/_/g, " ")}</Badge>
+          <span className="text-xs text-muted-foreground">
+            Interviewer is tracking whether this turn deepens the current topic or starts a new one.
+          </span>
+        </div>
+      ) : null}
 
       <div className="grid gap-4">
         <div>
@@ -254,4 +264,13 @@ export function InterviewerSessionPage() {
       </div>
     </div>
   );
+}
+
+export function latestAssistantAction(messages: ChatMessageOut[]): string | null {
+  for (const msg of [...messages].reverse()) {
+    if (msg.role !== "assistant" || !msg.meta) continue;
+    const action = msg.meta.next_action || msg.meta.thread_state?.last_action;
+    if (typeof action === "string" && action) return action;
+  }
+  return null;
 }

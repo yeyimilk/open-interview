@@ -124,7 +124,6 @@ class SqlIngestRepository:
         )
         self._s.add(row)
         await self._s.commit()
-        await self._s.refresh(row)
         return row
 
     async def update(self, *, run_id: UUID, status: str | None = None, step: str | None = None, progress: int | None = None, error: str | None = None) -> None:

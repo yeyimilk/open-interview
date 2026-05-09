@@ -36,6 +36,7 @@ import {
   MessagingLinkStatus,
   MessagingPairSession,
   MessagingPluginInfo,
+  LongTermMemoryOut,
   ModelPreferenceBody,
   ModelPreferenceOut,
   ModelRole,
@@ -81,6 +82,7 @@ type SectionId =
   | "keys"
   | "models"
   | "messaging"
+  | "memory"
   | "appearance"
   | "data"
   | "account";
@@ -90,6 +92,7 @@ const SECTIONS: { id: SectionId; label: string; icon: React.ElementType }[] = [
   { id: "keys", label: "API keys", icon: KeyRound },
   { id: "models", label: "Models", icon: Brain },
   { id: "messaging", label: "Messaging", icon: MessageSquare },
+  { id: "memory", label: "Memory", icon: Brain },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "data", label: "Data & privacy", icon: ShieldCheck },
   { id: "account", label: "Account", icon: LogOut },
@@ -112,6 +115,7 @@ export function SettingsPage() {
           {section === "keys" && <ApiKeysSection />}
           {section === "models" && <ModelProvidersSection />}
           {section === "messaging" && <MessagingSection />}
+          {section === "memory" && <MemorySection />}
           {section === "appearance" && <AppearanceSection />}
           {section === "data" && <DataSection />}
           {section === "account" && <AccountSection />}
@@ -1067,10 +1071,25 @@ function LinkCard({
   }, [link.channel, link.id, link.last_seen_at]);
 
   useEffect(() => {
-    void refreshStatus();
-    const id = window.setInterval(() => void refreshStatus(), 10_000);
-    return () => window.clearInterval(id);
-  }, [refreshStatus]);
+    const controller = new AbortController();
+    let pollId: number | null = null;
+
+    const startPolling = () => {
+      if (pollId !== null || controller.signal.aborted) return;
+      void refreshStatus();
+      pollId = window.setInterval(() => void refreshStatus(), 10_000);
+    };
+
+    void api
+      .streamLinkStatus(link.id, setStatus, controller.signal)
+      .then(startPolling)
+      .catch(() => startPolling());
+
+    return () => {
+      controller.abort();
+      if (pollId !== null) window.clearInterval(pollId);
+    };
+  }, [link.id, refreshStatus]);
 
   return (
     <div className="rounded-lg border">
@@ -1551,7 +1570,7 @@ function FiltersEditor({ link }: { link: MessagingLinkOut }) {
   );
 }
 
-function ModeOption({
+export function ModeOption({
   current,
   value,
   label,
@@ -1804,6 +1823,120 @@ function AppearanceSection() {
             );
           })}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------- Memory ----------
+
+export function MemorySection() {
+  const [items, setItems] = useState<LongTermMemoryOut[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [kind, setKind] = useState("all");
+  const [pinnedOnly, setPinnedOnly] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      setItems(
+        await api.listLongTermMemory({
+          kind: kind === "all" ? undefined : kind,
+          pinned: pinnedOnly ? true : undefined,
+          limit: 100,
+        })
+      );
+    } catch (e) {
+      toast.error("Failed to load memory", { description: (e as Error).message });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, pinnedOnly]);
+
+  async function togglePinned(item: LongTermMemoryOut) {
+    try {
+      const updated = await api.updateLongTermMemory(item.id, {
+        pinned: !item.pinned,
+      });
+      setItems((prev) => prev.map((m) => (m.id === item.id ? updated : m)));
+    } catch (e) {
+      toast.error("Failed to update memory", { description: (e as Error).message });
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Long-term memory</CardTitle>
+        <CardDescription>
+          Pin durable facts so future cleanup jobs keep them.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={kind} onValueChange={setKind}>
+            <SelectTrigger className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All kinds</SelectItem>
+              <SelectItem value="strength">Strengths</SelectItem>
+              <SelectItem value="gap">Gaps</SelectItem>
+              <SelectItem value="preference">Preferences</SelectItem>
+              <SelectItem value="fact">Facts</SelectItem>
+              <SelectItem value="delivery_gap">Delivery gaps</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            variant={pinnedOnly ? "default" : "outline"}
+            onClick={() => setPinnedOnly((v) => !v)}
+          >
+            <Check className="h-4 w-4" /> Pinned
+          </Button>
+          <Button type="button" variant="outline" onClick={() => void load()}>
+            <RefreshCw className="h-4 w-4" /> Refresh
+          </Button>
+        </div>
+        {loading ? (
+          <div className="text-sm text-muted-foreground">Loading memory...</div>
+        ) : items.length === 0 ? (
+          <EmptyState icon={Brain} title="No memories" description="End a chat or interview to create durable memory." />
+        ) : (
+          <div className="space-y-2">
+            {items.map((item) => (
+              <div key={item.id} className="rounded-md border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline">{item.kind.replace("_", " ")}</Badge>
+                      {item.project_id ? <Badge variant="muted">Project scoped</Badge> : null}
+                      {item.pinned ? <Badge>pinned</Badge> : null}
+                    </div>
+                    <p className="text-sm text-foreground">{item.content}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Weight {item.weight.toFixed(2)} · {new Date(item.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant={item.pinned ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => void togglePinned(item)}
+                  >
+                    <Check className="h-4 w-4" />
+                    {item.pinned ? "Pinned" : "Pin"}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

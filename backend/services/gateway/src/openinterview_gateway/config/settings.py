@@ -36,6 +36,10 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     log_json: bool = True
+    otel_enabled: bool = False
+    otel_service_name: str = "openinterview-gateway"
+    otel_exporter_otlp_endpoint: str | None = None
+    otel_sample_ratio: float = 1.0
 
 
 @lru_cache(maxsize=1)

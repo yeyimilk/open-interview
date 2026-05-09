@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     # Workers (used by core only to enqueue)
     worker_backend: Literal["arq", "rq", "celery"] = "arq"
     redis_url: str = "redis://localhost:6379/0"
+    qa_generation_enqueue_required: bool = False
+    tiers_yaml_path: str = "./config/tiers.yaml"
+
+    # Optional OpenTelemetry exporter wiring.
+    otel_enabled: bool = False
+    otel_service_name: str = "openinterview-core"
+    otel_exporter_otlp_endpoint: str | None = None
+    otel_sample_ratio: float = 1.0
 
     # HTTP
     core_host: str = "0.0.0.0"

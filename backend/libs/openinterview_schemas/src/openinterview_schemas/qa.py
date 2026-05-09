@@ -26,6 +26,22 @@ class QAItemOut(BaseModel):
     follow_up_axes: list[str] = Field(default_factory=list)
 
 
+class QAGenerationRunOut(BaseModel):
+    id: UUID
+    status: str
+    attempt: int = 1
+    trigger: str = "manual"
+    error: str | None = None
+    meta: dict[str, Any] | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
+class QASetReviewRequest(BaseModel):
+    review_status: str = Field(pattern="^(unreviewed|approved|needs_work|rejected)$")
+    review_notes: str | None = None
+
+
 class QASetOut(BaseModel):
     id: UUID
     project_id: UUID | None = None
@@ -36,6 +52,10 @@ class QASetOut(BaseModel):
     status: str
     total: int
     error: str | None = None
+    review_status: str = "unreviewed"
+    review_notes: str | None = None
+    reviewed_at: datetime | None = None
+    generation_run: QAGenerationRunOut | None = None
     created_at: datetime
 
 

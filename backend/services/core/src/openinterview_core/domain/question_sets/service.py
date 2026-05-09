@@ -70,11 +70,24 @@ class QuestionSetService:
         self, request: QuestionSetGenerationRequest
     ) -> QuestionSetGenerationResult:
         qa_set_id = await self._prepare_set(request)
+        async with self._sm() as s:
+            run = await SqlQARepository(s).create_generation_run(
+                qa_set_id=qa_set_id,
+                user_id=request.user_id,
+                scope=request.scope,
+                trigger="generation",
+                meta={
+                    "position": request.position,
+                    "level": request.level,
+                    "project_id": str(request.project_id) if request.project_id else None,
+                    "resume_id": str(request.resume_id) if request.resume_id else None,
+                },
+            )
         try:
             if request.scope == "project":
-                merged = await self._generate_project(request, qa_set_id=qa_set_id)
+                merged = await self._generate_project(request, qa_set_id=qa_set_id, run_id=run.id)
             elif request.scope == "resume":
-                merged = await self._generate_resume(request, qa_set_id=qa_set_id)
+                merged = await self._generate_resume(request, qa_set_id=qa_set_id, run_id=run.id)
             else:
                 raise ValueError(f"unsupported question-set scope: {request.scope}")
 
@@ -86,6 +99,11 @@ class QuestionSetService:
                 await repo.set_status(
                     qa_set_id=qa_set_id, status="ready", error=None
                 )
+                await repo.finish_generation_run(
+                    run_id=run.id,
+                    status="ready",
+                    meta={"item_count": len(merged)},
+                )
             return QuestionSetGenerationResult(
                 qa_set_id=qa_set_id,
                 scope=request.scope,
@@ -94,8 +112,12 @@ class QuestionSetService:
             )
         except Exception as e:
             async with self._sm() as s:
-                await SqlQARepository(s).set_status(
+                repo = SqlQARepository(s)
+                await repo.set_status(
                     qa_set_id=qa_set_id, status="failed", error=str(e)[:500]
+                )
+                await repo.finish_generation_run(
+                    run_id=run.id, status="failed", error=str(e)[:1000]
                 )
             raise
 
@@ -126,7 +148,7 @@ class QuestionSetService:
             return qa_set.id
 
     async def _generate_project(
-        self, request: QuestionSetGenerationRequest, *, qa_set_id: UUID
+        self, request: QuestionSetGenerationRequest, *, qa_set_id: UUID, run_id: UUID
     ) -> list:
         if request.project_id is None:
             raise ValueError("project_id is required for project question sets")
@@ -162,20 +184,22 @@ class QuestionSetService:
         )
         item_lists = await self._run_shards(
             [
-                lambda sh=sh: gen.generate(
+                (sh.retrieval_query, sh.category, lambda sh=sh: gen.generate(
                     user_id=request.user_id,
                     project_name=project.name,
                     project_summary=project.summary,
                     shard=sh,
                     level=request.level,
-                )
+                ))
                 for sh in shards
-            ]
+            ],
+            qa_set_id=qa_set_id,
+            run_id=run_id,
         )
         return QAMerger(max_total=self._max).merge(item_lists)
 
     async def _generate_resume(
-        self, request: QuestionSetGenerationRequest, *, qa_set_id: UUID
+        self, request: QuestionSetGenerationRequest, *, qa_set_id: UUID, run_id: UUID
     ) -> list:
         if request.resume_id is None:
             raise ValueError("resume_id is required for resume question sets")
@@ -210,7 +234,7 @@ class QuestionSetService:
         )
         item_lists = await self._run_shards(
             [
-                lambda sh=sh, ctx=ctx_by_query.get(sh.retrieval_query): (
+                (sh.retrieval_query, sh.category, lambda sh=sh, ctx=ctx_by_query.get(sh.retrieval_query): (
                     gen.generate(
                         user_id=request.user_id,
                         shard=sh,
@@ -220,23 +244,45 @@ class QuestionSetService:
                     )
                     if ctx is not None
                     else _empty_items()
-                )
+                ))
                 for sh in shards
-            ]
+            ],
+            qa_set_id=qa_set_id,
+            run_id=run_id,
         )
         return QAMerger(max_total=self._max).merge(item_lists)
 
-    async def _run_shards(self, calls) -> list[list]:
+    async def _run_shards(self, calls, *, qa_set_id: UUID, run_id: UUID) -> list[list]:
         sem = asyncio.Semaphore(self._shard_concurrency)
         failures = 0
 
-        async def _one(call):
+        async def _one(item):
             nonlocal failures
+            shard_key, category, call = item
             async with sem:
                 try:
-                    return await call()
-                except Exception:
+                    rows = await call()
+                    async with self._sm() as s:
+                        await SqlQARepository(s).upsert_generation_shard(
+                            run_id=run_id,
+                            qa_set_id=qa_set_id,
+                            shard_key=shard_key,
+                            category=category,
+                            status="ready",
+                            item_count=len(rows),
+                        )
+                    return rows
+                except Exception as e:
                     failures += 1
+                    async with self._sm() as s:
+                        await SqlQARepository(s).upsert_generation_shard(
+                            run_id=run_id,
+                            qa_set_id=qa_set_id,
+                            shard_key=shard_key,
+                            category=category,
+                            status="failed",
+                            error=str(e),
+                        )
                     return []
 
         item_lists = await asyncio.gather(*(_one(call) for call in calls))

@@ -7,7 +7,10 @@ import asyncio
 
 import pytest
 
-from openinterview_core.domain.messengers.sdk.delivery_guard import DeliveryGuard
+from openinterview_core.domain.messengers.sdk.delivery_guard import (
+    DeliveryGuard,
+    delivery_profiles_from_tiers_yaml,
+)
 from openinterview_core.domain.messengers.sdk.plugin import MessengerCapabilities
 
 
@@ -144,3 +147,35 @@ async def test_chunk_pause_actually_sleeps_between_parts(monkeypatch):
 
     # We expect at least one inter-chunk pause of 0.25s.
     assert any(abs(s - 0.25) < 1e-9 for s in sleeps)
+
+
+def test_delivery_profiles_load_from_tiers_yaml(tmp_path):
+    path = tmp_path / "tiers.yaml"
+    path.write_text(
+        """
+tiers:
+  free:
+    rpm_shared: 10
+    delivery:
+      rate_per_second: 0.5
+      burst: 2
+      recent_window: 5
+      chunk_pause_s: 1.25
+      max_chars_per_chunk: 900
+  paid:
+    rpm_shared: 100
+    delivery:
+      rate_per_second: 3
+      burst: 12
+      recent_window: 4
+      chunk_pause_s: 0.1
+      max_chars_per_chunk: 2500
+""",
+        encoding="utf-8",
+    )
+
+    profiles = delivery_profiles_from_tiers_yaml(path)
+
+    assert profiles["free"].burst == 2
+    assert profiles["free"].chunk_pause_s == pytest.approx(1.25)
+    assert profiles["pro"].rate_per_second == pytest.approx(3)

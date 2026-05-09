@@ -17,6 +17,7 @@ from .api.v1 import realtime as realtime_v1
 from .config import Settings, get_settings
 from .domain.rate_limit.tiers import TierCatalog
 from .domain.routing.catalog import ModelCatalog
+from .tracing import configure_tracing
 from .wiring import build_service
 
 log = get_logger(__name__)
@@ -89,6 +90,12 @@ async def _lifespan(app: FastAPI):
 def create_app(settings: Settings | None = None) -> FastAPI:
     s = settings or get_settings()
     configure_logging(level=s.log_level, json_output=s.log_json)
+    configure_tracing(
+        enabled=s.otel_enabled,
+        service_name=s.otel_service_name,
+        endpoint=s.otel_exporter_otlp_endpoint,
+        sample_ratio=s.otel_sample_ratio,
+    )
 
     app = FastAPI(title="Open Interview — GenAI Gateway", version="0.1.0", lifespan=_lifespan)
     app.state.settings = s

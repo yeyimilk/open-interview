@@ -217,7 +217,10 @@ class IngestionRunner:
                     "experience": parsed.experience,
                     "projects": parsed.projects,
                     "education": parsed.education,
-                    "claims": [{"text": c.text, "section": c.section} for c in parsed.claims],
+                    "claims": [
+                        {"text": c.text, "section": c.section, "category": c.category}
+                        for c in parsed.claims
+                    ],
                 },
             )
 
@@ -246,6 +249,8 @@ class IngestionRunner:
                         UUID(m.project_id) if m.project_id else None,
                         m.grounding or None,
                         m.confidence,
+                        m.section,
+                        m.category,
                     )
                     for m in mappings
                 ],

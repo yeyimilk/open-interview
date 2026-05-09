@@ -120,6 +120,8 @@ export interface ResumeDetail extends ResumeOut {
 export interface ClaimMappingOut {
   id: string;
   claim: string;
+  section: string | null;
+  category: string | null;
   project_id: string | null;
   grounding: any | null;
   confidence: number;
@@ -242,6 +244,17 @@ export interface QAItemOut {
   follow_up_axes: string[];
 }
 
+export interface QAGenerationRunOut {
+  id: string;
+  status: string;
+  attempt: number;
+  trigger: string;
+  error: string | null;
+  meta: any | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export interface QASetOut {
   id: string;
   project_id: string | null;
@@ -252,6 +265,10 @@ export interface QASetOut {
   status: string;
   total: number;
   error: string | null;
+  review_status: string;
+  review_notes: string | null;
+  reviewed_at: string | null;
+  generation_run: QAGenerationRunOut | null;
   created_at: string;
 }
 
@@ -278,6 +295,26 @@ export interface ChatMessageOut {
   role: string;
   content: string;
   meta: any | null;
+  created_at: string;
+}
+
+export interface ChatHistorySearchResult {
+  session: ChatSessionOut;
+  history_mode: "general" | "mentor" | "interviewer";
+  snippet: string;
+  matched_message_count: number;
+}
+
+export interface LongTermMemoryOut {
+  id: string;
+  user_id: string;
+  project_id: string | null;
+  kind: string;
+  content: string;
+  weight: number;
+  pinned: boolean;
+  meta: any | null;
+  source_session_id: string | null;
   created_at: string;
 }
 
@@ -717,6 +754,23 @@ export const api = {
       method: "POST",
     }),
 
+  adminListQASets: (params: { status?: string; review_status?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set("status", params.status);
+    if (params.review_status) q.set("review_status", params.review_status);
+    if (params.limit) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<QASetOut[]>(`/admin/qa-sets${suffix}`);
+  },
+  adminGetQASet: (id: string) => request<QASetDetail>(`/admin/qa-sets/${id}`),
+  adminReviewQASet: (id: string, body: { review_status: string; review_notes?: string | null }) =>
+    request<QASetOut>(`/admin/qa-sets/${id}/review`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  adminRegenerateQASet: (id: string) =>
+    request<QASetOut>(`/admin/qa-sets/${id}:regenerate`, { method: "POST" }),
+
   // qa
   generateQA: (projectId: string, position: string, levels: string[]) =>
     request<{ qa_set_ids: string[] }>(
@@ -728,6 +782,31 @@ export const api = {
   getQASet: (id: string) => request<QASetDetail>(`/qa-sets/${id}`),
   regenerateQASet: (id: string) =>
     request<QASetOut>(`/qa-sets/${id}:regenerate`, { method: "POST" }),
+
+  listLongTermMemory: (params: { kind?: string; project_id?: string; pinned?: boolean; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.kind) q.set("kind", params.kind);
+    if (params.project_id) q.set("project_id", params.project_id);
+    if (params.pinned !== undefined) q.set("pinned", String(params.pinned));
+    if (params.limit) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<LongTermMemoryOut[]>(`/memory/long-term${suffix}`);
+  },
+  updateLongTermMemory: (id: string, body: { pinned?: boolean; project_id?: string | null }) =>
+    request<LongTermMemoryOut>(`/memory/long-term/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  searchChatHistory: (params: { q?: string; mode?: string; project_id?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.q) q.set("q", params.q);
+    if (params.mode && params.mode !== "all") q.set("mode", params.mode);
+    if (params.project_id && params.project_id !== "all") q.set("project_id", params.project_id);
+    if (params.limit) q.set("limit", String(params.limit));
+    const suffix = q.toString() ? `?${q.toString()}` : "";
+    return request<ChatHistorySearchResult[]>(`/chat-history/search${suffix}`);
+  },
 
   // mentor
   createMentorSession: (project_id: string | null, title: string | null) =>
@@ -825,6 +904,18 @@ export const api = {
     request<void>(`/messaging/links/${id}`, { method: "DELETE" }),
   getLinkStatus: (id: string) =>
     request<MessagingLinkStatus>(`/messaging/links/${id}/status`),
+  streamLinkStatus: (
+    id: string,
+    onEvent: (status: MessagingLinkStatus) => void,
+    signal?: AbortSignal
+  ) =>
+    getSSE(
+      `/messaging/links/${id}/status/stream`,
+      (event) => {
+        if (event.event === "status") onEvent(event.data as MessagingLinkStatus);
+      },
+      signal
+    ),
   listLinkGroups: (id: string) =>
     request<MessagingGroup[]>(`/messaging/links/${id}/groups`),
   resolveLinkInvite: (id: string, code: string) =>
@@ -901,6 +992,27 @@ export interface MessagingLinkStatus {
 export interface SSEEvent {
   event: string;
   data: any;
+}
+
+export async function getSSE(
+  path: string,
+  onEvent: (e: SSEEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  async function open(): Promise<Response> {
+    return rawFetch(path, {
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+      isJson: false,
+      signal,
+    });
+  }
+  let res = await open();
+  if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) res = await open();
+  }
+  return consumeSSE(res, onEvent);
 }
 
 async function consumeSSE(

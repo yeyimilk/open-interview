@@ -93,6 +93,8 @@ class LLMClaimMapper(ClaimMapper):
                     project_id=best_pid,
                     grounding=best_evidence,
                     confidence=confidence,
+                    section=claim.section,
+                    category=claim.category,
                 )
             )
         return out

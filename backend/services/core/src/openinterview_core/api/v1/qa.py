@@ -10,6 +10,7 @@ from openinterview_logging import get_logger
 from openinterview_schemas import (
     GenerateQARequest,
     GenerateQAResponse,
+    QAGenerationRunOut,
     QAEvidence,
     QAItemOut,
     QASetDetail,
@@ -24,6 +25,41 @@ from ..deps import get_current_user
 
 router = APIRouter(tags=["qa"])
 log = get_logger(__name__)
+
+
+def _run_out(row) -> QAGenerationRunOut | None:
+    if row is None:
+        return None
+    return QAGenerationRunOut(
+        id=row.id,
+        status=row.status,
+        attempt=row.attempt,
+        trigger=row.trigger,
+        error=row.error,
+        meta=row.meta,
+        created_at=row.created_at,
+        completed_at=row.completed_at,
+    )
+
+
+async def _set_out(repo: SqlQARepository, row) -> QASetOut:
+    latest = await repo.latest_generation_run(qa_set_id=row.id)
+    return QASetOut(
+        id=row.id,
+        project_id=row.project_id,
+        resume_id=row.resume_id,
+        scope=row.scope,
+        position=row.position,
+        level=row.level,
+        status=row.status,
+        total=row.total,
+        error=row.error,
+        review_status=row.review_status,
+        review_notes=row.review_notes,
+        reviewed_at=row.reviewed_at,
+        generation_run=_run_out(latest),
+        created_at=row.created_at,
+    )
 
 
 def _service(request: Request) -> QAGenerationService:
@@ -55,6 +91,7 @@ async def _enqueue_project_qa_or_fallback(
     request: Request,
     background: BackgroundTasks,
     svc: QAGenerationService,
+    qa_set_id: UUID,
     user_id: UUID,
     project_id: UUID,
     position: str,
@@ -79,6 +116,14 @@ async def _enqueue_project_qa_or_fallback(
         level=level,
     )
     if not queued:
+        if getattr(settings, "qa_generation_enqueue_required", False):
+            async with request.app.state.db.sessionmaker() as s:
+                await SqlQARepository(s).set_status(
+                    qa_set_id=qa_set_id,
+                    status="failed",
+                    error="queue unavailable and QA enqueue is required",
+                )
+            return
         background.add_task(
             _safe_run,
             svc,
@@ -94,6 +139,7 @@ async def _enqueue_resume_qa_or_fallback(
     request: Request,
     background: BackgroundTasks,
     svc: QAGenerationService,
+    qa_set_id: UUID,
     user_id: UUID,
     resume_id: UUID,
     position: str,
@@ -118,6 +164,14 @@ async def _enqueue_resume_qa_or_fallback(
         level=level,
     )
     if not queued:
+        if getattr(settings, "qa_generation_enqueue_required", False):
+            async with request.app.state.db.sessionmaker() as s:
+                await SqlQARepository(s).set_status(
+                    qa_set_id=qa_set_id,
+                    status="failed",
+                    error="queue unavailable and QA enqueue is required",
+                )
+            return
         background.add_task(
             _safe_run_for_resume,
             svc,
@@ -142,6 +196,7 @@ async def generate_qa(
 ) -> GenerateQAResponse:
     repo = SqlQARepository(session)
     ids: list[UUID] = []
+    ids_by_level: dict[str, UUID] = {}
     for level in body.levels:
         qa_set = await repo.get_or_create_set(
             user_id=user.id,
@@ -150,6 +205,7 @@ async def generate_qa(
             level=level,
         )
         ids.append(qa_set.id)
+        ids_by_level[level] = qa_set.id
         await repo.set_status(qa_set_id=qa_set.id, status="pending", error=None)
 
     svc = _service(request)
@@ -158,6 +214,7 @@ async def generate_qa(
             request=request,
             background=background,
             svc=svc,
+            qa_set_id=ids_by_level[level],
             user_id=user.id,
             project_id=project_id,
             position=body.position,
@@ -175,21 +232,7 @@ async def list_qa_sets(
     items = await SqlQARepository(session).list_sets_for_project(
         user_id=user.id, project_id=project_id
     )
-    return [
-        QASetOut(
-            id=i.id,
-            project_id=i.project_id,
-            resume_id=i.resume_id,
-            scope=i.scope,
-            position=i.position,
-            level=i.level,
-            status=i.status,
-            total=i.total,
-            error=i.error,
-            created_at=i.created_at,
-        )
-        for i in items
-    ]
+    return [await _set_out(SqlQARepository(session), i) for i in items]
 
 
 @router.get("/qa-sets/{qa_set_id}", response_model=QASetDetail)
@@ -203,6 +246,7 @@ async def get_qa_set(
     if qa_set is None:
         raise HTTPException(status_code=404, detail="not found")
     items = await repo.list_items(user_id=user.id, qa_set_id=qa_set_id)
+    latest = await repo.latest_generation_run(qa_set_id=qa_set_id)
     return QASetDetail(
         id=qa_set.id,
         project_id=qa_set.project_id,
@@ -213,6 +257,10 @@ async def get_qa_set(
         status=qa_set.status,
         total=qa_set.total,
         error=qa_set.error,
+        review_status=qa_set.review_status,
+        review_notes=qa_set.review_notes,
+        reviewed_at=qa_set.reviewed_at,
+        generation_run=_run_out(latest),
         created_at=qa_set.created_at,
         items=[
             QAItemOut(
@@ -263,6 +311,7 @@ async def regenerate_qa_set(
             request=request,
             background=background,
             svc=svc,
+            qa_set_id=qa_set.id,
             user_id=user.id,
             resume_id=qa_set.resume_id,
             position=qa_set.position,
@@ -275,20 +324,12 @@ async def regenerate_qa_set(
             request=request,
             background=background,
             svc=svc,
+            qa_set_id=qa_set.id,
             user_id=user.id,
             project_id=qa_set.project_id,
             position=qa_set.position,
             level=qa_set.level,
         )
-    return QASetOut(
-        id=qa_set.id,
-        project_id=qa_set.project_id,
-        resume_id=qa_set.resume_id,
-        scope=qa_set.scope,
-        position=qa_set.position,
-        level=qa_set.level,
-        status="pending",
-        total=qa_set.total,
-        error=None,
-        created_at=qa_set.created_at,
-    )
+    qa_set.status = "pending"
+    qa_set.error = None
+    return await _set_out(repo, qa_set)

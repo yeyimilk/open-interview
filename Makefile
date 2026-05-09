@@ -25,7 +25,7 @@ PYTEST := .venv/bin/pytest
         infra infra-down infra-reset infra-logs \
         _kill-host down down-all \
         core gateway workers web wabridge all \
-        test fmt
+        test fmt seed-common-kb seed-leetcode
 
 help:
 	@echo "Targets:"
@@ -45,6 +45,8 @@ help:
 	@echo "  all          - run infra + core + gateway + workers + web in one terminal"
 	@echo "                 (uses overmind / hivemind / honcho — auto-detected)"
 	@echo "  test         - run all backend tests"
+	@echo "  seed-common-kb - seed curated public learning resources into common KB"
+	@echo "  seed-leetcode  - seed LeetCode metadata/concept notes only"
 	@echo "  fmt          - (placeholder) ruff format"
 	@echo ""
 
@@ -212,3 +214,9 @@ wait-infra:
 
 test:
 	$(PYTEST) backend -q
+
+seed-common-kb:
+	$(PY) scripts/seed_common_kb.py --kind all
+
+seed-leetcode:
+	$(PY) scripts/seed_common_kb.py --kind leetcode

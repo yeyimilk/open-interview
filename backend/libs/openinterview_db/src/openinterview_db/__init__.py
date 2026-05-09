@@ -6,7 +6,7 @@ from .models.user_model_preference import UserModelPreference
 from .models.gateway_usage_log import GatewayUsageLog
 from .models.project import IngestRun, Project, ProjectDiagram, ProjectFile
 from .models.resume import ClaimMapping, Resume
-from .models.qa import QAItem, QASet
+from .models.qa import QAItem, QAGenerationRun, QAGenerationShard, QASet
 from .models.chat import ChatMessage, ChatSession, InterviewEvaluation
 from .models.memory import EpisodicMemory, LongTermMemory
 from .models.common_kb import (
@@ -44,6 +44,8 @@ __all__ = [
     "ClaimMapping",
     "QASet",
     "QAItem",
+    "QAGenerationRun",
+    "QAGenerationShard",
     "ChatSession",
     "ChatMessage",
     "InterviewEvaluation",

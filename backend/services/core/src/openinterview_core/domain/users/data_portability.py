@@ -26,6 +26,8 @@ from openinterview_db import (
     Project,
     ProjectDiagram,
     ProjectFile,
+    QAGenerationRun,
+    QAGenerationShard,
     QAItem,
     QASet,
     Resume,
@@ -137,6 +139,14 @@ class DataPortabilityService:
         )
 
         await _delete("qa_items", delete(QAItem).where(QAItem.user_id == user_id))
+        await _delete(
+            "qa_generation_shards",
+            delete(QAGenerationShard).where(QAGenerationShard.qa_set_id.in_(select(QASet.id).where(QASet.user_id == user_id))),
+        )
+        await _delete(
+            "qa_generation_runs",
+            delete(QAGenerationRun).where(QAGenerationRun.user_id == user_id),
+        )
         await _delete("qa_sets", delete(QASet).where(QASet.user_id == user_id))
         await _delete(
             "claim_mappings",
@@ -225,6 +235,14 @@ class DataPortabilityService:
                 self._s, ClaimMapping, ClaimMapping.user_id == user_id
             ),
             "qa_sets": await _rows(self._s, QASet, QASet.user_id == user_id),
+            "qa_generation_runs": await _rows(
+                self._s, QAGenerationRun, QAGenerationRun.user_id == user_id
+            ),
+            "qa_generation_shards": await _rows(
+                self._s,
+                QAGenerationShard,
+                QAGenerationShard.qa_set_id.in_(select(QASet.id).where(QASet.user_id == user_id)),
+            ),
             "qa_items": await _rows(self._s, QAItem, QAItem.user_id == user_id),
             "chat_sessions": await _rows(
                 self._s, ChatSession, ChatSession.user_id == user_id

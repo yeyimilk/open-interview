@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -246,6 +247,105 @@ async def test_mixed_workspace_retrieval_merges_sources_without_duplicates(
     assert RetrievalSource.resume in sources
     assert RetrievalSource.long_term_memory in sources
     assert len({(c.source, c.id) for c in result.chunks}) == len(result.chunks)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_ranking_promotes_keyword_and_pinned_memory(
+    retrieval_env,
+) -> None:
+    sm, vs = retrieval_env
+    user_id = uuid.uuid4()
+    await _seed_user(sm, user_id, "hybrid@x.com")
+    collection = vector_collection_for_user_memory(str(user_id))
+    await vs.upsert(
+        collection=collection,
+        records=[
+            VectorRecord(
+                id="generic",
+                text="General interview practice note with weak topical overlap.",
+                metadata={"kind": "fact", "user_id": str(user_id)},
+            ),
+            VectorRecord(
+                id="storage",
+                text=(
+                    "LSM storage compaction write amplification read "
+                    "amplification tradeoffs."
+                ),
+                metadata={
+                    "kind": "fact",
+                    "user_id": str(user_id),
+                    "pinned": True,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            ),
+        ],
+        embeddings=[[0.8, 0.6, 0.0, 0.0], [0.75, 0.66, 0.0, 0.0]],
+    )
+    svc = InProcessRetrievalService(
+        sessionmaker=sm, gateway=FakeGateway(), vector_store=vs
+    )
+
+    result = await svc.retrieve(
+        RetrieveRequest(
+            user_id=user_id,
+            query="LSM storage compaction write amplification",
+            sources=[RetrievalSource.long_term_memory],
+            top_k=2,
+        )
+    )
+
+    assert [c.id for c in result.chunks] == ["storage", "generic"]
+
+
+@pytest.mark.asyncio
+async def test_long_term_memory_project_filter_includes_global_only_and_selected_project(
+    retrieval_env,
+) -> None:
+    sm, vs = retrieval_env
+    user_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    other_project_id = uuid.uuid4()
+    await _seed_user(sm, user_id, "memory-scope@x.com")
+    async with sm() as s:
+        repo = SqlMemoryRepository(s)
+        await repo.add_long_term(
+            user_id=user_id,
+            kind="fact",
+            content="Global interviewing preference.",
+            weight=0.2,
+        )
+        await repo.add_long_term(
+            user_id=user_id,
+            project_id=project_id,
+            kind="fact",
+            content="Selected project detail.",
+            weight=0.9,
+        )
+        await repo.add_long_term(
+            user_id=user_id,
+            project_id=other_project_id,
+            kind="fact",
+            content="Other project detail.",
+            weight=1.0,
+        )
+    svc = InProcessRetrievalService(
+        sessionmaker=sm, gateway=FakeGateway(fail_embed=True), vector_store=vs
+    )
+
+    result = await svc.retrieve(
+        RetrieveRequest(
+            user_id=user_id,
+            query="project detail",
+            sources=[RetrievalSource.long_term_memory],
+            project_ids=[project_id],
+            top_k=5,
+        )
+    )
+
+    texts = {c.text for c in result.chunks}
+    assert "Selected project detail." in texts
+    assert "Global interviewing preference." in texts
+    assert "Other project detail." not in texts
 
 
 @pytest.mark.asyncio

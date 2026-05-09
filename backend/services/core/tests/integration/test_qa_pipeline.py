@@ -138,6 +138,8 @@ async def test_qa_generation_creates_set_and_items(tmp_path):
         repo = SqlQARepository(s)
         qa_set = await repo.get_set(user_id=user_id, qa_set_id=qa_set_id)
         items = await repo.list_items(user_id=user_id, qa_set_id=qa_set_id)
+        run = await repo.latest_generation_run(qa_set_id=qa_set_id)
+        shards = await repo.list_generation_shards(run_id=run.id) if run else []
 
     assert qa_set is not None
     assert qa_set.status == "ready"
@@ -153,6 +155,11 @@ async def test_qa_generation_creates_set_and_items(tmp_path):
         "implementation_details",
         "trade_offs",
     ]
+    assert run is not None
+    assert run.status == "ready"
+    assert run.attempt == 1
+    assert shards
+    assert all(shard.status == "ready" for shard in shards)
 
     await db.dispose()
 
@@ -204,6 +211,7 @@ async def test_question_set_service_generates_resume_set(tmp_path):
         repo = SqlQARepository(s)
         qa_set = await repo.get_set(user_id=user_id, qa_set_id=result.qa_set_id)
         items = await repo.list_items(user_id=user_id, qa_set_id=result.qa_set_id)
+        run = await repo.latest_generation_run(qa_set_id=result.qa_set_id)
 
     assert qa_set is not None
     assert qa_set.scope == "resume"
@@ -211,6 +219,8 @@ async def test_question_set_service_generates_resume_set(tmp_path):
     assert qa_set.status == "ready"
     assert items
     assert items[0].follow_up_axes
+    assert run is not None
+    assert run.meta["item_count"] == qa_set.total
 
     await db.dispose()
 
@@ -260,9 +270,15 @@ async def test_question_set_service_marks_failed_when_all_shards_fail(tmp_path):
             position="swe_generic",
             level="mid",
         )
+        run = await repo.latest_generation_run(qa_set_id=qa_set.id)
+        shards = await repo.list_generation_shards(run_id=run.id) if run else []
 
     assert qa_set.status == "failed"
     assert "all question generation shards failed" in (qa_set.error or "")
+    assert run is not None
+    assert run.status == "failed"
+    assert shards
+    assert all(shard.status == "failed" for shard in shards)
 
     await db.dispose()
 

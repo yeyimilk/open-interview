@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +15,15 @@ from openinterview_core.domain.interviewer import InterviewBlueprintService
 from openinterview_core.domain.kb import CommonDocumentTextExtractor
 from openinterview_core.infra.db.common_kb_repository import SqlCommonKBRepository, normalize_tag
 from openinterview_db import Base
+
+_seed_path = Path(__file__).resolve().parents[5] / "scripts" / "seed_common_kb.py"
+_seed_spec = importlib.util.spec_from_file_location("seed_common_kb", _seed_path)
+assert _seed_spec and _seed_spec.loader
+_seed_module = importlib.util.module_from_spec(_seed_spec)
+sys.modules["seed_common_kb"] = _seed_module
+_seed_spec.loader.exec_module(_seed_module)
+SEED_ITEMS = _seed_module.ITEMS
+SEED_SOURCES = _seed_module.SOURCES
 
 
 @pytest.fixture()
@@ -46,6 +58,17 @@ def test_common_doc_extractor_handles_csv_and_json() -> None:
 
 def test_normalize_tag_is_stable() -> None:
     assert normalize_tag("Graph DP / Two Pointers") == "graph-dp-two-pointers"
+
+
+def test_public_seed_pack_keeps_leetcode_metadata_only() -> None:
+    leetcode = [item for item in SEED_ITEMS if item.source == "leetcode_topics"]
+    assert leetcode
+    assert SEED_SOURCES["leetcode_topics"]["license"].startswith("metadata-only")
+    for item in leetcode:
+        assert item.question is None
+        assert item.answer_outline is None
+        assert "solution" not in (item.content or "").lower()
+        assert item.provenance and item.provenance.get("stored")
 
 
 @pytest.mark.asyncio

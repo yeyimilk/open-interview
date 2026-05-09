@@ -22,6 +22,8 @@ class ResumeDetail(ResumeOut):
 class ClaimMappingOut(BaseModel):
     id: UUID
     claim: str
+    section: str | None = None
+    category: str | None = None
     project_id: UUID | None
     grounding: Any | None
     confidence: int

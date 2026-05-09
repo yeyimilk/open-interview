@@ -24,8 +24,10 @@ import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from openinterview_logging import get_logger
+import yaml
 
 from .delivery import _chunks
 from .plugin import MessengerPlugin
@@ -75,6 +77,30 @@ DEFAULT_DELIVERY_PROFILES: dict[str, DeliveryProfile] = {
         max_chars_per_chunk=3200,
     ),
 }
+
+
+def delivery_profiles_from_tiers_yaml(path: str | Path) -> dict[str, DeliveryProfile]:
+    data = yaml.safe_load(Path(path).read_text()) or {}
+    out: dict[str, DeliveryProfile] = {}
+    for name, body in (data.get("tiers") or {}).items():
+        delivery = body.get("delivery") or {}
+        if not delivery:
+            continue
+        profile = DeliveryProfile(
+            rate_per_second=float(delivery.get("rate_per_second", 1.0)),
+            burst=int(delivery.get("burst", 5)),
+            recent_window=int(delivery.get("recent_window", 3)),
+            chunk_pause_s=float(delivery.get("chunk_pause_s", 0.4)),
+            max_chars_per_chunk=(
+                int(delivery["max_chars_per_chunk"])
+                if delivery.get("max_chars_per_chunk") is not None
+                else None
+            ),
+        )
+        out[name] = profile
+        if name == "paid":
+            out["pro"] = profile
+    return {**DEFAULT_DELIVERY_PROFILES, **out}
 
 
 class DeliveryGuard:

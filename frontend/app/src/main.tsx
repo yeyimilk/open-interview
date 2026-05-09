@@ -27,6 +27,7 @@ import { SettingsPage } from "./features/settings/SettingsPage";
 import { AdminKBPage } from "./features/admin/AdminKBPage";
 import { AdminKBDocumentsPage } from "./features/admin/AdminKBDocumentsPage";
 import { AdminKBItemsPage } from "./features/admin/AdminKBItemsPage";
+import { AdminQAReviewPage } from "./features/admin/AdminQAReviewPage";
 import { AdminUsersPage } from "./features/admin/AdminUsersPage";
 import { HomePage } from "./pages/HomePage";
 
@@ -90,6 +91,14 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <AdminKBItemsPage />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="admin/qa"
+                element={
+                  <RequireAuth>
+                    <AdminQAReviewPage />
                   </RequireAuth>
                 }
               />

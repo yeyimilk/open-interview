@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -54,6 +55,10 @@ class QASet(UUIDPKMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")  # pending|running|ready|failed
     total: Mapped[int] = mapped_column(default=0, nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unreviewed")
+    review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewer_user_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
 
 
 class QAItem(UUIDPKMixin, TimestampMixin, Base):
@@ -74,4 +79,37 @@ class QAItem(UUIDPKMixin, TimestampMixin, Base):
     # Optional context populated for resume-scoped items: { "claim": str,
     # "claim_section": str, "source_project_id": str | None }. Project-scoped
     # items leave it NULL.
+    meta: Mapped[Any] = mapped_column(JsonType, nullable=True)
+
+
+class QAGenerationRun(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "qa_generation_runs"
+
+    qa_set_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("qa_sets.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), index=True, nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    trigger: Mapped[str] = mapped_column(String(64), nullable=False, default="manual")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta: Mapped[Any] = mapped_column(JsonType, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class QAGenerationShard(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "qa_generation_shards"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("qa_generation_runs.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    qa_set_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("qa_sets.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    shard_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     meta: Mapped[Any] = mapped_column(JsonType, nullable=True)

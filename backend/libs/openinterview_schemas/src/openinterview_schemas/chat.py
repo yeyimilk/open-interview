@@ -33,6 +33,13 @@ class ChatMessageOut(BaseModel):
     created_at: datetime
 
 
+class ChatHistorySearchResult(BaseModel):
+    session: ChatSessionOut
+    history_mode: str
+    snippet: str = ""
+    matched_message_count: int = 0
+
+
 # ---------- Mentor ----------
 
 class CreateMentorSessionRequest(BaseModel):

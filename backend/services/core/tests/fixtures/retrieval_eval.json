@@ -1,0 +1,25 @@
+{
+  "cases": [
+    {
+      "id": "storage-lsm-btree",
+      "query": "compare lsm compaction and btree range scan tradeoffs",
+      "sources": ["common_kb", "long_term_memory"],
+      "expected_terms": ["lsm", "compaction", "btree"],
+      "min_precision_at_3": 0.66
+    },
+    {
+      "id": "system-design-cache",
+      "query": "how should I explain cache invalidation in a system design interview",
+      "sources": ["common_kb"],
+      "expected_terms": ["cache", "invalidation", "ttl"],
+      "min_precision_at_3": 0.66
+    },
+    {
+      "id": "resume-claim-grounding",
+      "query": "which project evidence supports my async api claim",
+      "sources": ["resume_claim", "project"],
+      "expected_terms": ["async", "api", "evidence"],
+      "min_precision_at_3": 0.5
+    }
+  ]
+}

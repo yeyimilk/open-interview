@@ -8,6 +8,10 @@ export interface Config {
   serviceToken: string; // shared secret for /pair, /send, etc.
   webhookUrl: string; // where inbound messages are POSTed
   webhookSecret: string; // HMAC for outbound webhook
+  otelEnabled: boolean;
+  otelServiceName: string;
+  otelExporterOtlpEndpoint?: string;
+  otelSampleRatio: number;
 }
 
 export function loadConfig(): Config {
@@ -23,5 +27,11 @@ export function loadConfig(): Config {
       "http://127.0.0.1:8000/webhooks/whatsapp/",
     webhookSecret:
       process.env.WHATSAPP_BRIDGE_WEBHOOK_SECRET ?? "dev-webhook-secret",
+    otelEnabled: (process.env.OTEL_ENABLED ?? "false").toLowerCase() === "true",
+    otelServiceName:
+      process.env.OTEL_SERVICE_NAME ?? "openinterview-whatsapp-bridge",
+    otelExporterOtlpEndpoint:
+      process.env.OTEL_EXPORTER_OTLP_ENDPOINT || undefined,
+    otelSampleRatio: Number(process.env.OTEL_SAMPLE_RATIO ?? "1"),
   };
 }

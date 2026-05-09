@@ -187,6 +187,8 @@ async def list_claim_mappings(
         ClaimMappingOut(
             id=i.id,
             claim=i.claim,
+            section=i.section,
+            category=i.category,
             project_id=i.project_id,
             grounding=i.grounding,
             confidence=i.confidence,

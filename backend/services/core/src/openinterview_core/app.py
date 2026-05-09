@@ -10,7 +10,9 @@ from openinterview_logging import configure_logging, get_logger
 
 from .api.v1 import api_keys as api_keys_v1
 from .api.v1 import admin_kb as admin_kb_v1
+from .api.v1 import admin_qa as admin_qa_v1
 from .api.v1 import admin_users as admin_users_v1
+from .api.v1 import chat_history as chat_history_v1
 from .api.v1 import model_preferences as model_preferences_v1
 from .api.v1 import audio as audio_v1
 from .api.v1 import auth as auth_v1
@@ -19,6 +21,7 @@ from .api.v1 import health as health_v1
 from .api.v1 import interviewer as interviewer_v1
 from .api.v1 import kb as kb_v1
 from .api.v1 import me as me_v1
+from .api.v1 import memory as memory_v1
 from .api.v1 import mentor as mentor_v1
 from .api.v1 import messaging as messaging_v1
 from .api.v1 import projects as projects_v1
@@ -28,6 +31,7 @@ from .api.v1 import resumes as resumes_v1
 from .config import Settings, get_settings
 from .infra.blob import build_blob_storage
 from .infra.db import Database
+from .infra.tracing import configure_tracing
 from .security import SecretBox, TokenIssuer
 
 log = get_logger(__name__)
@@ -139,6 +143,27 @@ async def _dev_patch_columns(conn) -> None:
         await conn.execute(
             text("ALTER TABLE qa_items ADD COLUMN follow_up_axes JSON NULL")
         )
+    for column, ddl in {
+        "review_status": "ALTER TABLE qa_sets ADD COLUMN review_status VARCHAR(32) NOT NULL DEFAULT 'unreviewed'",
+        "review_notes": "ALTER TABLE qa_sets ADD COLUMN review_notes TEXT NULL",
+        "reviewed_at": "ALTER TABLE qa_sets ADD COLUMN reviewed_at TIMESTAMP NULL",
+        "reviewer_user_id": "ALTER TABLE qa_sets ADD COLUMN reviewer_user_id UUID NULL",
+    }.items():
+        if not await _has_column("qa_sets", column):
+            await conn.execute(text(ddl))
+
+    if not await _has_column("long_term_memories", "pinned"):
+        await conn.execute(
+            text("ALTER TABLE long_term_memories ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT FALSE")
+        )
+    if not await _has_column("long_term_memories", "project_id"):
+        await conn.execute(
+            text("ALTER TABLE long_term_memories ADD COLUMN project_id UUID NULL")
+        )
+    if not await _has_column("claim_mappings", "section"):
+        await conn.execute(text("ALTER TABLE claim_mappings ADD COLUMN section VARCHAR(64) NULL"))
+    if not await _has_column("claim_mappings", "category"):
+        await conn.execute(text("ALTER TABLE claim_mappings ADD COLUMN category VARCHAR(64) NULL"))
 
     # interview_evaluations: delivery rubric (audio-mode interviews).
     if not await _has_column("interview_evaluations", "delivery_score"):
@@ -226,6 +251,12 @@ async def _lifespan(app: FastAPI):
 def create_app(settings: Settings | None = None) -> FastAPI:
     s = settings or get_settings()
     configure_logging(level=s.log_level, json_output=s.log_json)
+    configure_tracing(
+        enabled=s.otel_enabled,
+        service_name=s.otel_service_name,
+        endpoint=s.otel_exporter_otlp_endpoint,
+        sample_ratio=s.otel_sample_ratio,
+    )
 
     app = FastAPI(title="Open Interview — Core API", version="0.1.0", lifespan=_lifespan)
     app.state.settings = s
@@ -242,14 +273,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_v1.router, prefix=api_prefix)
     app.include_router(auth_v1.router, prefix=api_prefix)
     app.include_router(me_v1.router, prefix=api_prefix)
+    app.include_router(memory_v1.router, prefix=api_prefix)
     app.include_router(api_keys_v1.router, prefix=api_prefix)
     app.include_router(model_preferences_v1.router, prefix=api_prefix)
     app.include_router(model_preferences_v1.providers_router, prefix=api_prefix)
     app.include_router(projects_v1.router, prefix=api_prefix)
     app.include_router(resumes_v1.router, prefix=api_prefix)
     app.include_router(qa_v1.router, prefix=api_prefix)
+    app.include_router(chat_history_v1.router, prefix=api_prefix)
     app.include_router(kb_v1.router, prefix=api_prefix)
     app.include_router(admin_kb_v1.router, prefix=api_prefix)
+    app.include_router(admin_qa_v1.router, prefix=api_prefix)
     app.include_router(admin_users_v1.router, prefix=api_prefix)
     app.include_router(mentor_v1.router, prefix=api_prefix)
     app.include_router(general_v1.router, prefix=api_prefix)

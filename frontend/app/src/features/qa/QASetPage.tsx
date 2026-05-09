@@ -89,6 +89,9 @@ export function QASetPage() {
         actions={
           <>
             <StatusPill status={set.status} />
+            <Badge variant={set.review_status === "approved" ? "success" : "muted"}>
+              {set.review_status.replace("_", " ")}
+            </Badge>
             {targetLink && (
               <Button asChild variant="outline">
                 <Link to={targetLink.to}>
@@ -110,6 +113,15 @@ export function QASetPage() {
           </CardContent>
         </Card>
       )}
+      {set.generation_run ? (
+        <Card className="mb-4">
+          <CardContent className="py-3 text-sm text-muted-foreground">
+            Generation run {set.generation_run.status}
+            {set.generation_run.attempt ? ` · attempt ${set.generation_run.attempt}` : ""}
+            {set.generation_run.error ? ` · ${set.generation_run.error}` : ""}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="space-y-4">
         {Object.entries(byCat).map(([cat, items]) => (

@@ -16,6 +16,7 @@ from .agent_facade_impl import CoreAgentFacade
 from .plugins.whatsapp.pairing import WhatsAppPairingTracker
 from .registry import PluginRegistry, build_registry
 from .sdk.filter_store import MessengerFilterStore
+from .sdk.delivery_guard import DeliveryGuard, delivery_profiles_from_tiers_yaml
 from .sdk.kernel import MessengerKernel
 from .sdk.pair_tokens import PairTokenStore
 from .sdk.session_store import ActiveSessionStore, MessengerLinkStore
@@ -64,12 +65,18 @@ def build_messenger_runtime(app) -> tuple[MessengerKernel, PluginRegistry]:
         qa=qa,
         redis_url=app.state.settings.redis_url,
     )
+    profiles = None
+    try:
+        profiles = delivery_profiles_from_tiers_yaml(app.state.settings.tiers_yaml_path)
+    except Exception as e:  # noqa: BLE001
+        log.warning("messenger_delivery_profiles_load_failed", error=str(e))
     kernel = MessengerKernel(
         agent=facade,
         links=MessengerLinkStore(sm),
         active=ActiveSessionStore(sm),
         pair_tokens=PairTokenStore(sm),
         filters=MessengerFilterStore(sm),
+        delivery_guard=DeliveryGuard(profiles=profiles) if profiles else None,
     )
 
     plugins_root = Path(__file__).parent / "plugins"

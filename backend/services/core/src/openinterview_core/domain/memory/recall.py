@@ -103,6 +103,7 @@ class MemoryRetriever:
         user_id: UUID,
         items: list[tuple[str, str, float]],  # [(kind, content, weight)]
         source_session_id: UUID | None = None,
+        project_id: UUID | None = None,
     ) -> None:
         if not items:
             return
@@ -117,6 +118,7 @@ class MemoryRetriever:
             for (kind, content, weight) in items:
                 row = await repo.add_long_term(
                     user_id=user_id,
+                    project_id=project_id,
                     kind=kind,
                     content=content,
                     weight=weight,
@@ -129,7 +131,13 @@ class MemoryRetriever:
                 VectorRecord(
                     id=str(saved[i].id),
                     text=texts[i],
-                    metadata={"kind": items[i][0], "user_id": str(user_id)},
+                    metadata={
+                        "kind": items[i][0],
+                        "user_id": str(user_id),
+                        "project_id": str(project_id) if project_id else "",
+                        "pinned": False,
+                        "created_at": saved[i].created_at.isoformat(),
+                    },
                 )
                 for i in range(len(saved))
             ]

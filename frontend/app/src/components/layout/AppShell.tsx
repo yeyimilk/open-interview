@@ -82,6 +82,7 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
         { to: "/admin/kb", label: "KB Upload", icon: Database },
         { to: "/admin/kb/documents", label: "KB Documents", icon: FileText },
         { to: "/admin/kb/items", label: "KB Items", icon: ListChecks },
+        { to: "/admin/qa", label: "QA Review", icon: ListChecks },
       ]
     : NAV;
   return (
