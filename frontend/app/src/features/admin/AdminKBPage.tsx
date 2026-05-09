@@ -10,7 +10,6 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   CommonKBDocumentOut,
-  CommonKBItemOut,
   CommonKBSourceOut,
   CommonKBSpaceOut,
   api,
@@ -86,7 +85,6 @@ export function AdminKBPage() {
   const [spaces, setSpaces] = useState<CommonKBSpaceOut[]>([]);
   const [sources, setSources] = useState<CommonKBSourceOut[]>([]);
   const [docs, setDocs] = useState<CommonKBDocumentOut[]>([]);
-  const [items, setItems] = useState<CommonKBItemOut[]>([]);
   const [spaceKey, setSpaceKey] = useState("leetcode");
   const [file, setFile] = useState<File | null>(null);
   const [folderFiles, setFolderFiles] = useState<FolderUploadFile[]>([]);
@@ -104,16 +102,14 @@ export function AdminKBPage() {
 
   async function load() {
     if (!user?.is_admin) return;
-    const [sp, src, ds, it] = await Promise.all([
+    const [sp, src, ds] = await Promise.all([
       api.adminListSpaces(),
       api.adminListSources(),
-      api.adminListDocuments(spaceKey),
-      api.adminListItems({ space: spaceKey }),
+      api.adminListDocuments({ space: spaceKey, limit: 5 }),
     ]);
     setSpaces(sp);
     setSources(src);
     setDocs(ds);
-    setItems(it);
     if (!sp.some((s) => s.key === spaceKey) && sp[0]) setSpaceKey(sp[0].key);
   }
 
@@ -309,7 +305,7 @@ export function AdminKBPage() {
     <div className="space-y-5">
       <PageHeader
         title="Common KB Admin"
-        description="Upload prepared interview documents, register allowlisted sources, and review public KB items."
+        description="Upload prepared interview documents, register allowlisted sources, and jump to focused review pages."
         actions={
           <>
             <Button variant="outline" onClick={seedSpaces} disabled={busy}>
@@ -476,34 +472,30 @@ export function AdminKBPage() {
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between gap-3">
-              <CardTitle className="text-base">Recent Documents</CardTitle>
+              <CardTitle className="text-base">Latest Documents</CardTitle>
               <Button asChild size="sm" variant="outline">
                 <Link to="/admin/kb/documents">View all</Link>
               </Button>
             </div>
           </CardHeader>
           <CardContent className="space-y-2">
-            {docs.slice(0, 8).map((d) => (
+            {docs.map((d) => (
               <div key={d.id} className="flex items-center justify-between rounded-md border p-3">
                 <div className="min-w-0">
                   <div className="font-medium">{d.title}</div>
                   <div className="text-xs text-muted-foreground">{d.filename}</div>
-                  {d.tags.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {d.tags.slice(0, 8).map((tag) => (
-                        <Link key={tag} to={`/admin/kb/items?tag=${encodeURIComponent(tag)}`}>
-                          <Badge variant="muted" className="hover:bg-accent">
-                            {tag}
-                          </Badge>
-                        </Link>
-                      ))}
-                      {d.tags.length > 8 && <Badge variant="outline">+{d.tags.length - 8}</Badge>}
-                    </div>
-                  )}
-                  <div className="mt-2">
+                  <div className="mt-2 flex flex-wrap gap-1">
                     <Badge variant={d.create_embeddings ? "outline" : "muted"}>
                       {d.create_embeddings ? "Embeddings enabled" : "No embeddings"}
                     </Badge>
+                    {d.tags.slice(0, 3).map((tag) => (
+                      <Link key={tag} to={`/admin/kb/items?tag=${encodeURIComponent(tag)}`}>
+                        <Badge variant="muted" className="hover:bg-accent">
+                          {tag}
+                        </Badge>
+                      </Link>
+                    ))}
+                    {d.tags.length > 3 && <Badge variant="outline">+{d.tags.length - 3}</Badge>}
                   </div>
                 </div>
                 <StatusPill status={d.status} />
@@ -535,39 +527,6 @@ export function AdminKBPage() {
           </CardContent>
         </Card>
       </div>
-
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between gap-3">
-              <CardTitle className="text-base">Recent Items</CardTitle>
-              <Button asChild size="sm" variant="outline">
-                <Link to="/admin/kb/items">View all</Link>
-              </Button>
-            </div>
-          </CardHeader>
-        <CardContent className="space-y-2">
-          {items.slice(0, 12).map((it) => (
-            <div key={it.id} className="rounded-md border p-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline">{it.category}</Badge>
-                <Badge variant="muted">{it.item_type}</Badge>
-                {it.company && <Badge variant="muted">{it.company}</Badge>}
-                {it.language && <Badge variant="muted">{it.language}</Badge>}
-                {it.tags.slice(0, 6).map((tag) => (
-                  <Link key={tag} to={`/admin/kb/items?tag=${encodeURIComponent(tag)}`}>
-                    <Badge variant="muted" className="hover:bg-accent">
-                      {tag}
-                    </Badge>
-                  </Link>
-                ))}
-              </div>
-              <div className="mt-2 font-medium">{it.title}</div>
-              {it.question && <div className="mt-1 text-sm text-muted-foreground">{it.question}</div>}
-            </div>
-          ))}
-          {items.length === 0 && <EmptyLine text="No items extracted yet." />}
-        </CardContent>
-      </Card>
     </div>
   );
 }

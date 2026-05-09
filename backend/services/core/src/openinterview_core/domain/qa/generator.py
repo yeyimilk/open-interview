@@ -5,8 +5,14 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from openinterview_schemas import ChatMessage
+from openinterview_schemas import (
+    ChatMessage,
+    RetrieveRequest,
+    RetrievalPurpose,
+    RetrievalSource,
+)
 
+from ..retrieval import RetrievalService
 from .types import QAEvidence, QAItem, QAShard
 
 
@@ -15,16 +21,14 @@ class ShardGenerator:
         self,
         *,
         gateway,
-        embedder,
-        vector_store,
-        collection: str,
+        retrieval_service: RetrievalService,
+        project_id: UUID,
         logical_model: str = "chat-strong",
         retrieval_k: int = 8,
     ) -> None:
         self._gw = gateway
-        self._embed = embedder
-        self._vs = vector_store
-        self._coll = collection
+        self._retrieval = retrieval_service
+        self._project_id = project_id
         self._model = logical_model
         self._k = retrieval_k
 
@@ -37,20 +41,25 @@ class ShardGenerator:
         shard: QAShard,
         level: str,
     ) -> list[QAItem]:
-        vectors = await self._embed.embed(user_id=user_id, texts=[shard.retrieval_query])
-        if not vectors:
-            return []
-        matches = await self._vs.query(
-            collection=self._coll, embedding=vectors[0], k=self._k
+        retrieved = await self._retrieval.retrieve(
+            RetrieveRequest(
+                user_id=user_id,
+                query=shard.retrieval_query,
+                purpose=RetrievalPurpose.qa_generation,
+                sources=[RetrievalSource.project],
+                project_ids=[self._project_id],
+                top_k=self._k,
+                per_source_top_k={"project": self._k},
+                context_char_budget=6000,
+            )
         )
 
         evidence_blocks: list[str] = []
         evidence_meta: list[QAEvidence] = []
-        for m in matches:
-            md = m.metadata or {}
-            rel = str(md.get("rel_path") or "")
-            start = int(md.get("start_line") or 0)
-            end = int(md.get("end_line") or 0)
+        for m in retrieved.chunks:
+            rel = str(m.citation.rel_path or "")
+            start = int(m.citation.start_line or 0)
+            end = int(m.citation.end_line or 0)
             snippet = m.text[:600]
             evidence_blocks.append(
                 f"FILE {rel}:{start}-{end}\n{snippet}\n---"

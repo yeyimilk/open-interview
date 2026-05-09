@@ -168,6 +168,11 @@ export interface CommonKBDocumentOut {
   created_at: string;
 }
 
+export interface CommonKBDocumentBatchDeleteResponse {
+  deleted_ids: string[];
+  missing_ids: string[];
+}
+
 export interface CommonKBItemOut {
   id: string;
   space_id: string;
@@ -647,6 +652,11 @@ export const api = {
   adminDeleteDocument: (id: string) =>
     request<void>(`/admin/kb/documents/${id}`, {
       method: "DELETE",
+    }),
+  adminDeleteDocuments: (ids: string[]) =>
+    request<CommonKBDocumentBatchDeleteResponse>("/admin/kb/documents:batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ document_ids: ids }),
     }),
   adminProcessDocument: (id: string) =>
     request<{ status: string }>(`/admin/kb/documents/${id}:process`, {

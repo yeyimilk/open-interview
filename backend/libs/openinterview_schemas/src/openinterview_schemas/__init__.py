@@ -49,6 +49,8 @@ from .qa import (
     QASetOut,
 )
 from .common_kb import (
+    CommonKBDocumentBatchDeleteRequest,
+    CommonKBDocumentBatchDeleteResponse,
     CommonKBDocumentOut,
     CommonKBItemCreate,
     CommonKBItemOut,
@@ -62,6 +64,14 @@ from .common_kb import (
     InterviewPreferenceIn,
     InterviewPreferenceOut,
     InterviewSessionPreferences,
+)
+from .retrieval import (
+    Citation,
+    RetrieveRequest,
+    RetrieveResponse,
+    RetrievedChunk,
+    RetrievalPurpose,
+    RetrievalSource,
 )
 from .chat import (
     ChatMessageOut,
@@ -134,6 +144,8 @@ __all__ = [
     "CommonKBSourceCreate",
     "CommonKBSourceUpdate",
     "CommonKBSourceOut",
+    "CommonKBDocumentBatchDeleteRequest",
+    "CommonKBDocumentBatchDeleteResponse",
     "CommonKBDocumentOut",
     "CommonKBItemCreate",
     "CommonKBItemUpdate",
@@ -142,6 +154,12 @@ __all__ = [
     "InterviewPreferenceIn",
     "InterviewPreferenceOut",
     "InterviewSessionPreferences",
+    "Citation",
+    "RetrieveRequest",
+    "RetrieveResponse",
+    "RetrievedChunk",
+    "RetrievalPurpose",
+    "RetrievalSource",
     "ChatSessionOut",
     "ChatMessageOut",
     "CreateMentorSessionRequest",

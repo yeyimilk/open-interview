@@ -18,16 +18,12 @@ from typing import Any
 from uuid import UUID
 
 from openinterview_schemas import ChatMessage as ChatMessageDTO
+from openinterview_schemas import RetrieveRequest, RetrievalPurpose, RetrievalSource
+from openinterview_schemas import RetrievedChunk
 from openinterview_schemas import ToolCall
 
-from ...infra.vector import (
-    VectorStore,
-    vector_collection_for_user_project,
-)
-from ..memory.recall import MemoryRetriever
-from ..projects.embedder import GatewayEmbedder
 from ..projects.fs import ProjectFs
-from ..kb import CommonKBRetriever
+from ..retrieval import RetrievalService
 from .tools import (
     MAX_TOOL_TURNS,
     MAX_TOTAL_RESULT_CHARS,
@@ -41,18 +37,12 @@ class MentorAgent:
         self,
         *,
         gateway,
-        embedder: GatewayEmbedder,
-        vector_store: VectorStore,
-        retriever: MemoryRetriever,
-        common_kb: CommonKBRetriever | None = None,
+        retrieval_service: RetrievalService,
         blob=None,
         chat_logical_model: str = "chat-fast",
     ) -> None:
         self._gw = gateway
-        self._embed = embedder
-        self._vs = vector_store
-        self._retriever = retriever
-        self._common = common_kb
+        self._retrieval = retrieval_service
         self._blob = blob
         self._model = chat_logical_model
 
@@ -61,8 +51,10 @@ class MentorAgent:
     def _build_general_messages(
         self,
         *,
-        recalled,
+        working_messages: list[dict],
+        memory_ctx: list[dict],
         workspace_brief: str,
+        workspace_ctx: list[dict],
         common_ctx: list[dict],
         user_input: str,
     ) -> list[ChatMessageDTO]:
@@ -77,10 +69,14 @@ class MentorAgent:
         ctx_lines: list[str] = []
         if workspace_brief:
             ctx_lines.append(f"USER WORKSPACE: {workspace_brief}")
-        if recalled and recalled.long_term:
+        if memory_ctx:
             ctx_lines.append("\nWHAT WE KNOW ABOUT THE USER:")
-            for lt in recalled.long_term[:5]:
-                ctx_lines.append(f"- [{lt.kind}] {lt.content}")
+            for lt in memory_ctx[:6]:
+                ctx_lines.append(f"- [{lt['kind']}] {lt['content']}")
+        if workspace_ctx:
+            ctx_lines.append("\nRELEVANT WORKSPACE CONTEXT:")
+            for c in workspace_ctx[:8]:
+                ctx_lines.append(f"- [{c['source']}] {c['title']}: {c['snippet']}")
         if common_ctx:
             ctx_lines.append("\nCOMMON INTERVIEW KB:")
             for c in common_ctx[:5]:
@@ -105,7 +101,7 @@ class MentorAgent:
         history: list[ChatMessageDTO] = [
             ChatMessageDTO(role="system", content=system)
         ]
-        for m in (recalled.working_messages if recalled else []):
+        for m in working_messages:
             role = m.get("role", "user")
             if role not in ("user", "assistant", "system"):
                 role = "user"
@@ -118,26 +114,33 @@ class MentorAgent:
     def _build_messages(
         self,
         *,
-        recalled,
+        working_messages: list[dict],
+        memory_ctx: list[dict],
         proj_ctx: list[dict],
+        resume_ctx: list[dict],
         common_ctx: list[dict],
         user_input: str,
         has_project: bool,
     ) -> list[ChatMessageDTO]:
         ctx_lines: list[str] = []
-        if recalled:
-            if recalled.episodic_summaries:
-                ctx_lines.append("RECENT SESSION SUMMARIES:")
-                for s in recalled.episodic_summaries[:5]:
-                    ctx_lines.append(f"- {s}")
-            if recalled.long_term:
-                ctx_lines.append("\nWHAT WE KNOW ABOUT YOU:")
-                for lt in recalled.long_term[:6]:
-                    ctx_lines.append(f"- [{lt.kind}] {lt.content}")
+        episodic = [m for m in memory_ctx if m["source"] == "episodic_memory"]
+        long_term = [m for m in memory_ctx if m["source"] == "long_term_memory"]
+        if episodic:
+            ctx_lines.append("RECENT SESSION SUMMARIES:")
+            for s in episodic[:5]:
+                ctx_lines.append(f"- {s['content']}")
+        if long_term:
+            ctx_lines.append("\nWHAT WE KNOW ABOUT YOU:")
+            for lt in long_term[:6]:
+                ctx_lines.append(f"- [{lt['kind']}] {lt['content']}")
         if proj_ctx:
             ctx_lines.append("\nRELEVANT PROJECT EVIDENCE (vector search):")
             for c in proj_ctx[:5]:
                 ctx_lines.append(f"- {c['rel_path']}: {c['snippet']}")
+        if resume_ctx:
+            ctx_lines.append("\nRELEVANT RESUME CONTEXT:")
+            for c in resume_ctx[:4]:
+                ctx_lines.append(f"- {c['title']}: {c['snippet']}")
         if common_ctx:
             ctx_lines.append("\nRELEVANT COMMON KB (public interview prep):")
             for c in common_ctx[:6]:
@@ -167,7 +170,7 @@ class MentorAgent:
         history: list[ChatMessageDTO] = [
             ChatMessageDTO(role="system", content=system)
         ]
-        for m in (recalled.working_messages if recalled else []):
+        for m in working_messages:
             role = m.get("role", "user")
             if role not in ("user", "assistant", "system"):
                 role = "user"
@@ -189,51 +192,6 @@ class MentorAgent:
         except Exception:
             return None
 
-    async def _vector_context(
-        self, *, user_id: UUID, project_id: UUID, query: str
-    ) -> list[dict]:
-        try:
-            vecs = await self._embed.embed(user_id=user_id, texts=[query])
-            if not vecs:
-                return []
-            coll = vector_collection_for_user_project(
-                str(user_id), str(project_id)
-            )
-            matches = await self._vs.query(
-                collection=coll, embedding=vecs[0], k=6
-            )
-            return [
-                {
-                    "rel_path": (m.metadata or {}).get("rel_path", ""),
-                    "snippet": m.text[:600],
-                    "score": m.score,
-                }
-                for m in matches
-            ]
-        except Exception:
-            return []
-
-    async def _common_context(
-        self, *, user_id: UUID, query: str, project_id: UUID | None = None
-    ) -> list[dict]:
-        if self._common is None:
-            return []
-        try:
-            matches = await self._common.retrieve(user_id=user_id, query=query, k=6)
-            return [
-                {
-                    "title": m.title,
-                    "category": m.category,
-                    "source": m.source,
-                    "snippet": m.text[:500],
-                    "company": m.company,
-                    "language": m.language,
-                }
-                for m in matches
-            ]
-        except Exception:
-            return []
-
     # ------- general /chat entry -------
 
     async def general_stream(
@@ -246,14 +204,29 @@ class MentorAgent:
     ) -> AsyncIterator[dict[str, Any]]:
         """Plain LLM chat with memory recall but no project tools and
         no mentor framing. Used by /chat (general) mode."""
-        recalled = await self._retriever.recall(
-            user_id=user_id, session_id=session_id, query=user_input
+        retrieved = await self._retrieval.retrieve(
+            RetrieveRequest(
+                user_id=user_id,
+                session_id=session_id,
+                query=user_input,
+                purpose=RetrievalPurpose.general_chat,
+                top_k=18,
+                per_source_top_k={
+                    "working_memory": 12,
+                    "long_term_memory": 5,
+                    "project": 2,
+                    "resume": 3,
+                    "common_kb": 5,
+                },
+                context_char_budget=6500,
+            )
         )
-        common_ctx = await self._common_context(user_id=user_id, query=user_input)
         messages = self._build_general_messages(
-            recalled=recalled,
+            working_messages=_working_messages(retrieved.chunks),
+            memory_ctx=_memory_context(retrieved.chunks),
             workspace_brief=workspace_brief,
-            common_ctx=common_ctx,
+            workspace_ctx=_workspace_context(retrieved.chunks),
+            common_ctx=_common_context(retrieved.chunks),
             user_input=user_input,
         )
         chunks: list[str] = []
@@ -283,24 +256,35 @@ class MentorAgent:
         project_id: UUID | None,
         user_input: str,
     ) -> AsyncIterator[dict[str, Any]]:
-        recalled = await self._retriever.recall(
-            user_id=user_id, session_id=session_id, query=user_input
-        )
-        proj_ctx: list[dict] = []
         fs: ProjectFs | None = None
+        project_ids = [project_id] if project_id is not None else None
         if project_id is not None:
-            proj_ctx = await self._vector_context(
-                user_id=user_id, project_id=project_id, query=user_input
-            )
             fs = await self._load_fs(user_id, project_id)
-        common_ctx = await self._common_context(
-            user_id=user_id, project_id=project_id, query=user_input
+        retrieved = await self._retrieval.retrieve(
+            RetrieveRequest(
+                user_id=user_id,
+                session_id=session_id,
+                query=user_input,
+                purpose=RetrievalPurpose.mentor,
+                project_ids=project_ids,
+                top_k=18,
+                per_source_top_k={
+                    "working_memory": 12,
+                    "episodic_memory": 5,
+                    "long_term_memory": 6,
+                    "project": 6,
+                    "common_kb": 6,
+                },
+                context_char_budget=7000,
+            )
         )
 
         messages = self._build_messages(
-            recalled=recalled,
-            proj_ctx=proj_ctx,
-            common_ctx=common_ctx,
+            working_messages=_working_messages(retrieved.chunks),
+            memory_ctx=_memory_context(retrieved.chunks),
+            proj_ctx=_project_context(retrieved.chunks),
+            resume_ctx=_resume_context(retrieved.chunks),
+            common_ctx=_common_context(retrieved.chunks),
             user_input=user_input,
             has_project=fs is not None,
         )
@@ -420,3 +404,91 @@ def _split_for_stream(text: str, *, chunk: int = 40):
     """Yield small slices so non-streaming content still trickles to the UI."""
     for i in range(0, len(text), chunk):
         yield text[i : i + chunk]
+
+
+def _working_messages(chunks: list[RetrievedChunk]) -> list[dict]:
+    return [
+        {
+            "role": str(c.metadata.get("role") or "user"),
+            "content": c.text,
+        }
+        for c in chunks
+        if c.source == RetrievalSource.working_memory
+    ]
+
+
+def _memory_context(chunks: list[RetrievedChunk]) -> list[dict]:
+    out: list[dict] = []
+    for c in chunks:
+        if c.source not in {
+            RetrievalSource.episodic_memory,
+            RetrievalSource.long_term_memory,
+        }:
+            continue
+        out.append(
+            {
+                "source": c.source.value,
+                "kind": str(c.metadata.get("kind") or c.title or "fact"),
+                "content": c.text,
+                "score": c.score,
+            }
+        )
+    return out
+
+
+def _project_context(chunks: list[RetrievedChunk]) -> list[dict]:
+    return [
+        {
+            "rel_path": c.citation.rel_path or c.title or "",
+            "snippet": c.text[:600],
+            "score": c.score,
+            "project_id": str(c.citation.project_id) if c.citation.project_id else None,
+        }
+        for c in chunks
+        if c.source == RetrievalSource.project
+    ]
+
+
+def _resume_context(chunks: list[RetrievedChunk]) -> list[dict]:
+    return [
+        {"title": c.title or c.source.value, "snippet": c.text[:600], "score": c.score}
+        for c in chunks
+        if c.source in {RetrievalSource.resume, RetrievalSource.resume_claim}
+    ]
+
+
+def _workspace_context(chunks: list[RetrievedChunk]) -> list[dict]:
+    out: list[dict] = []
+    for c in chunks:
+        if c.source == RetrievalSource.project:
+            out.append(
+                {
+                    "source": "project",
+                    "title": c.citation.rel_path or c.title or "",
+                    "snippet": c.text[:500],
+                }
+            )
+        elif c.source in {RetrievalSource.resume, RetrievalSource.resume_claim}:
+            out.append(
+                {
+                    "source": c.source.value,
+                    "title": c.title or "",
+                    "snippet": c.text[:500],
+                }
+            )
+    return out
+
+
+def _common_context(chunks: list[RetrievedChunk]) -> list[dict]:
+    return [
+        {
+            "title": c.title or "",
+            "category": str(c.metadata.get("category") or "general"),
+            "source": str(c.metadata.get("source") or "common"),
+            "snippet": c.text[:500],
+            "company": c.metadata.get("company"),
+            "language": c.metadata.get("language"),
+        }
+        for c in chunks
+        if c.source == RetrievalSource.common_kb
+    ]

@@ -18,8 +18,7 @@ from openinterview_schemas import (
 )
 
 from ...domain.interviewer import InterviewBlueprintService, InterviewerAgent, SessionEvaluator
-from ...domain.kb import CommonKBRetriever
-from ...domain.memory import MemoryDistiller, MemoryRetriever
+from ...domain.memory import MemoryRetriever
 from ...domain.projects.embedder import GatewayEmbedder
 from ...domain.qa import QAGenerationService
 from ...infra.db import get_session_dep
@@ -47,12 +46,7 @@ def _agent(request: Request) -> InterviewerAgent:
     return InterviewerAgent(
         sessionmaker=sm,
         gateway=request.app.state.gateway,
-        retriever=_retriever(request),
-        common_kb=CommonKBRetriever(
-            sessionmaker=sm,
-            gateway=request.app.state.gateway,
-            vector_store=request.app.state.vector_store,
-        ),
+        retrieval_service=request.app.state.retrieval_service,
     )
 
 
@@ -71,6 +65,7 @@ def _qa_service(request: Request) -> QAGenerationService:
         sessionmaker=sm,
         gateway=request.app.state.gateway,
         vector_store=request.app.state.vector_store,
+        retrieval_service=request.app.state.retrieval_service,
     )
 
 

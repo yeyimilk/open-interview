@@ -85,7 +85,17 @@ For each project, the system produces and stores:
 - Full chat history is persisted indefinitely (subject to user's "wipe" action).
 
 **FR-8 Common KB (v1)**
-- Read-only KB shared across users, refreshable by admin command.
+- Read-only KB for end users, shared across users, managed by admins.
+- Admins can create spaces/sources, upload single documents or folders into a
+  chosen space, process extracted items, and review documents/items on
+  dedicated admin pages.
+- Uploaded documents are assigned to an explicit target space by the admin at
+  upload time. AI extraction categorizes the items inside that document, but
+  does not choose the document's space.
+- Admin document delete is a hard delete. Single and batch delete remove the
+  document row, extracted items/tags, common-KB vector records, and stored blob
+  where available; vector/blob cleanup failures are logged and do not restore
+  the already-deleted database rows.
 - v1 sources: `applied_ai_questions`, `system_design_primer`.
 - Storage policy: **questions + our own generated answers only**; no copyrighted solutions are scraped/stored.
 - An inventory file `COMMON_KB_INVENTORY.md` lists what is included and what is intentionally excluded.
@@ -172,6 +182,7 @@ For each project, the system produces and stores:
 |  served at         |  HTTPS  |   - Auth                |
 |  http://localhost  |         |   - Projects/Resume     |
 +--------------------+         |   - QA / KB             |
+                               |   - Retrieval boundary  |
                                |   - Mentor / Interviewer|
                                |   - Memory              |
                                +-----------+-------------+
@@ -230,6 +241,11 @@ Web UI microphone
 - **Workers** — background jobs (ingestion, QA generation, memory distillation). Multiple processes OK.
 - **GenAI Gateway** — independent service. Core/Workers only know it through an internal HTTP API; provider details are invisible to the rest of the system.
 - **Realtime Gateway** — WebSocket service for live interviewer audio. It owns browser PCM streaming, OpenAI Realtime transcription, turn aggregation, speaker verification, and the bridge back to Core. It never exposes raw provider keys to the browser.
+- **Retrieval boundary** — in-process Core domain service for v1. It owns
+  source selection, per-source top-k, filtering, score sorting, dedupe,
+  citation formatting, snippet truncation, token-budgeted context assembly, and
+  structured retrieval logs. `/chat`, Mentor, Interviewer, QA generation, and
+  resume claim mapping call through this boundary.
 - **PostgreSQL** — single source of truth for relational data.
 - **Vector DB (Chroma)** — embeddings for code chunks, docs, QA, common KB, memory facts.
 - **Blob store** — uploaded zips, extracted source trees, generated diagrams.
@@ -324,9 +340,19 @@ Three layers, all per-user:
 - LLM pass produces a delta over current profile.
 - Apply delta with conflict-resolution heuristics (more recent + higher-confidence wins).
 
-**Mentor read flow**: chat history (last N messages) + retrieved profile facts (top-k via embedding of current question) + retrieved private/common KB chunks.
+**Retrieval read flow**: chat, Mentor, Interviewer, QA generation, and resume
+claim mapping call the in-process `RetrievalService`. The service retrieves
+from project code/doc chunks, common KB, generated QA, parsed resume data,
+claim mappings, working memory, episodic memory, and long-term memory as
+requested by purpose/source filters. It returns cited chunks plus compact,
+token-budgeted context text.
 
-**Interviewer read flow**: profile facts (to choose weak-area questions) + project KB + selected QA bank.
+**Mentor read flow**: chat history (last N messages) + retrieval context for
+project/common/memory sources + read-only project filesystem tools when deeper
+inspection is needed.
+
+**Interviewer read flow**: retrieval context for memory/common/project
+selection + the existing picker/evaluator policy.
 
 ### 3.7 GenAI Model Gateway
 
@@ -706,8 +732,7 @@ Worker -> DB: mark qa_run done
 ```
 WebUI -> Core: POST /mentor/sessions/{id}/messages { text }
 Core -> DB: append user message
-Core -> Memory: retrieve top profile facts + recent episodic summaries
-Core -> KB: retrieve top private & common chunks
+Core -> RetrievalService: retrieve cited project/common/memory context
 Core -> Gateway: chat completion with assembled context
 Gateway -> Provider -> Gateway -> Core: response + usage
 Core -> DB: append assistant message; log usage
@@ -1000,6 +1025,12 @@ A separate file `docs/COMMON_KB_INVENTORY.md` will be created at implementation 
 
 Refresh: admin runs `scripts/refresh_common_kb.py`; produces a new version row in `common_kb_items`.
 
+Admin document operations are available through Core:
+- `POST /api/v1/admin/kb/documents` uploads into an explicit `space_key`.
+- `POST /api/v1/admin/kb/documents/{document_id}:process` queues extraction and embedding.
+- `DELETE /api/v1/admin/kb/documents/{document_id}` hard-deletes one document and its extracted items.
+- `POST /api/v1/admin/kb/documents:batch-delete` hard-deletes multiple documents and returns deleted/missing IDs.
+
 ---
 
 ## 10. Voice Readiness (v1 = text-only)
@@ -1033,8 +1064,9 @@ Milestones (rough order):
 5. **M4 — Mentor**: LangGraph agent + retrieval + memory read.
 6. **M5 — Interviewer**: LangGraph agent + rubric evaluator + episodic write.
 7. **M6 — Distillation & profile memory**: job + Mentor consumes profile.
-8. **M7 — Common KB**: applied_ai + system_design_primer; refresh script.
-9. **M8 — Hardening**: per-tenant isolation tests, export/wipe, observability, MVP acceptance run-through.
+8. **RAG boundary**: in-process retrieval service shared by chat, Mentor, Interviewer, QA generation, and resume claim mapping.
+9. **M7 — Common KB**: admin spaces/sources/uploads, extracted items, embeddings, single/batch document delete; seed content tracked separately.
+10. **M8 — Hardening**: per-tenant isolation tests, export/wipe, observability, MVP acceptance run-through.
 
 Each milestone ends with a runnable demo and tests.
 

@@ -9,9 +9,14 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from openinterview_schemas import ChatMessage
+from openinterview_schemas import (
+    ChatMessage,
+    RetrieveRequest,
+    RetrievalPurpose,
+    RetrievalSource,
+)
 
-from ...infra.vector import vector_collection_for_user_project
+from ..retrieval import RetrievalService
 from .resume_planner import ResumeShardContext
 from .types import QAEvidence, QAItem, QAShard
 
@@ -21,14 +26,12 @@ class ResumeShardGenerator:
         self,
         *,
         gateway,
-        embedder,
-        vector_store,
+        retrieval_service: RetrievalService,
         logical_model: str = "chat-strong",
         retrieval_k: int = 4,
     ) -> None:
         self._gw = gateway
-        self._embed = embedder
-        self._vs = vector_store
+        self._retrieval = retrieval_service
         self._model = logical_model
         self._k = retrieval_k
 
@@ -53,33 +56,34 @@ class ResumeShardGenerator:
             and context.claim
         ):
             try:
-                vectors = await self._embed.embed(
-                    user_id=user_id, texts=[context.claim]
+                retrieved = await self._retrieval.retrieve(
+                    RetrieveRequest(
+                        user_id=user_id,
+                        query=context.claim,
+                        purpose=RetrievalPurpose.qa_generation,
+                        sources=[RetrievalSource.project],
+                        project_ids=[UUID(context.source_project_id)],
+                        top_k=self._k,
+                        per_source_top_k={"project": self._k},
+                        context_char_budget=4000,
+                    )
                 )
-                if vectors:
-                    coll = vector_collection_for_user_project(
-                        str(user_id), context.source_project_id
+                for m in retrieved.chunks:
+                    rel = str(m.citation.rel_path or "")
+                    start = int(m.citation.start_line or 0)
+                    end = int(m.citation.end_line or 0)
+                    snippet = m.text[:600]
+                    evidence_blocks.append(
+                        f"FILE {rel}:{start}-{end}\n{snippet}\n---"
                     )
-                    matches = await self._vs.query(
-                        collection=coll, embedding=vectors[0], k=self._k
+                    evidence_meta.append(
+                        QAEvidence(
+                            rel_path=rel,
+                            start_line=start,
+                            end_line=end,
+                            snippet=snippet,
+                        )
                     )
-                    for m in matches:
-                        md = m.metadata or {}
-                        rel = str(md.get("rel_path") or "")
-                        start = int(md.get("start_line") or 0)
-                        end = int(md.get("end_line") or 0)
-                        snippet = m.text[:600]
-                        evidence_blocks.append(
-                            f"FILE {rel}:{start}-{end}\n{snippet}\n---"
-                        )
-                        evidence_meta.append(
-                            QAEvidence(
-                                rel_path=rel,
-                                start_line=start,
-                                end_line=end,
-                                snippet=snippet,
-                            )
-                        )
             except Exception:
                 # Non-fatal: fall back to non-grounded generation.
                 evidence_blocks = []

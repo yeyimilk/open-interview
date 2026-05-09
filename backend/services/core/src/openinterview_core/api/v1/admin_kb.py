@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from openinterview_db import User
 from openinterview_logging import get_logger
 from openinterview_schemas import (
+    CommonKBDocumentBatchDeleteRequest,
+    CommonKBDocumentBatchDeleteResponse,
     CommonKBDocumentOut,
     CommonKBItemCreate,
     CommonKBItemOut,
@@ -255,22 +257,19 @@ async def get_document(
     return _doc_out(row, tag_map.get(row.id, []))
 
 
-@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(
+async def _delete_document_and_artifacts(
     document_id: UUID,
     request: Request,
-    _: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session_dep),
-) -> None:
-    repo = SqlCommonKBRepository(session)
+    repo: SqlCommonKBRepository,
+) -> bool:
     row = await repo.get_document(document_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="not found")
+        return False
     blob_path = row.blob_path
     item_refs = await repo.document_item_refs(document_id)
     deleted = await repo.delete_document_with_items(document_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="not found")
+        return False
     ids_by_space: dict[str, list[str]] = defaultdict(list)
     for item_id, space_key in item_refs:
         ids_by_space[space_key].append(str(item_id))
@@ -292,6 +291,49 @@ async def delete_document(
             await request.app.state.blob.delete(blob_path)
         except Exception as e:  # noqa: BLE001
             log.warning("common_kb_delete_blob_failed", document_id=str(document_id), error=str(e))
+    return True
+
+
+@router.post("/documents:batch-delete", response_model=CommonKBDocumentBatchDeleteResponse)
+async def batch_delete_documents(
+    body: CommonKBDocumentBatchDeleteRequest,
+    request: Request,
+    _: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> CommonKBDocumentBatchDeleteResponse:
+    repo = SqlCommonKBRepository(session)
+    deleted_ids: list[UUID] = []
+    missing_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    for document_id in body.document_ids:
+        if document_id in seen:
+            continue
+        seen.add(document_id)
+        deleted = await _delete_document_and_artifacts(document_id, request, repo)
+        if deleted:
+            deleted_ids.append(document_id)
+        else:
+            missing_ids.append(document_id)
+    return CommonKBDocumentBatchDeleteResponse(
+        deleted_ids=deleted_ids,
+        missing_ids=missing_ids,
+    )
+
+
+@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: UUID,
+    request: Request,
+    _: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session_dep),
+) -> None:
+    deleted = await _delete_document_and_artifacts(
+        document_id,
+        request,
+        SqlCommonKBRepository(session),
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="not found")
 
 
 @router.post("/documents/{document_id}:process")

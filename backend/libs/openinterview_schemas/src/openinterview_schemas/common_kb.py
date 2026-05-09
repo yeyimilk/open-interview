@@ -74,6 +74,15 @@ class CommonKBDocumentOut(BaseModel):
     created_at: datetime
 
 
+class CommonKBDocumentBatchDeleteRequest(BaseModel):
+    document_ids: list[UUID] = Field(min_length=1, max_length=200)
+
+
+class CommonKBDocumentBatchDeleteResponse(BaseModel):
+    deleted_ids: list[UUID] = Field(default_factory=list)
+    missing_ids: list[UUID] = Field(default_factory=list)
+
+
 class CommonKBItemCreate(BaseModel):
     space_key: str
     source_id: UUID | None = None

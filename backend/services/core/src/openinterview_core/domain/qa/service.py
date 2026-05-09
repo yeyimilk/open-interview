@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ...infra.db.qa_repository import SqlQARepository
 from ...infra.db.project_repository import SqlProjectRepository
 from ...infra.db.resume_repository import SqlResumeRepository
-from ...infra.vector import VectorStore, vector_collection_for_user_project
-from ..projects.embedder import GatewayEmbedder
+from ...infra.vector import VectorStore
+from ..retrieval import InProcessRetrievalService, RetrievalService
 from .generator import ShardGenerator
 from .merger import QAMerger
 from .planner import QAPlanner
@@ -25,6 +25,7 @@ class QAGenerationService:
         sessionmaker: async_sessionmaker[AsyncSession],
         gateway,
         vector_store: VectorStore,
+        retrieval_service: RetrievalService | None = None,
         chat_logical_model: str = "chat-strong",
         embed_logical_model: str = "embed-default",
         max_total_per_set: int = 25,
@@ -32,6 +33,12 @@ class QAGenerationService:
         self._sm = sessionmaker
         self._gw = gateway
         self._vs = vector_store
+        self._retrieval = retrieval_service or InProcessRetrievalService(
+            sessionmaker=sessionmaker,
+            gateway=gateway,
+            vector_store=vector_store,
+            embed_logical_model=embed_logical_model,
+        )
         self._chat = chat_logical_model
         self._embed = embed_logical_model
         self._max = max_total_per_set
@@ -95,13 +102,10 @@ class QAGenerationService:
             level=level,
         )
 
-        embedder = GatewayEmbedder(self._gw, logical_model=self._embed)
-        coll = vector_collection_for_user_project(str(user_id), str(project_id))
         gen = ShardGenerator(
             gateway=self._gw,
-            embedder=embedder,
-            vector_store=self._vs,
-            collection=coll,
+            retrieval_service=self._retrieval,
+            project_id=project_id,
             logical_model=self._chat,
         )
 
@@ -207,11 +211,9 @@ class QAGenerationService:
             level=level,
         )
 
-        embedder = GatewayEmbedder(self._gw, logical_model=self._embed)
         gen = ResumeShardGenerator(
             gateway=self._gw,
-            embedder=embedder,
-            vector_store=self._vs,
+            retrieval_service=self._retrieval,
             logical_model=self._chat,
         )
         sem = asyncio.Semaphore(3)

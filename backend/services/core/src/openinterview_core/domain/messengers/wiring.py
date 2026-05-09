@@ -10,7 +10,6 @@ from openinterview_logging import get_logger
 from ..interviewer import InterviewerAgent, SessionEvaluator
 from ..memory import MemoryRetriever
 from ..mentor import MentorAgent
-from ..kb import CommonKBRetriever
 from ..projects.embedder import GatewayEmbedder
 from ..qa import QAGenerationService
 from .agent_facade_impl import CoreAgentFacade
@@ -39,27 +38,22 @@ def build_messenger_runtime(app) -> tuple[MessengerKernel, PluginRegistry]:
     )
     mentor = MentorAgent(
         gateway=gateway,
-        embedder=embedder,
-        vector_store=vector_store,
-        retriever=retriever,
-        common_kb=CommonKBRetriever(
-            sessionmaker=sm, gateway=gateway, vector_store=vector_store
-        ),
+        retrieval_service=app.state.retrieval_service,
         blob=blob,
     )
     interviewer = InterviewerAgent(
         sessionmaker=sm,
         gateway=gateway,
-        retriever=retriever,
-        common_kb=CommonKBRetriever(
-            sessionmaker=sm, gateway=gateway, vector_store=vector_store
-        ),
+        retrieval_service=app.state.retrieval_service,
     )
     evaluator = SessionEvaluator(
         sessionmaker=sm, gateway=gateway, retriever=retriever
     )
     qa = QAGenerationService(
-        sessionmaker=sm, gateway=gateway, vector_store=vector_store
+        sessionmaker=sm,
+        gateway=gateway,
+        vector_store=vector_store,
+        retrieval_service=app.state.retrieval_service,
     )
 
     facade = CoreAgentFacade(

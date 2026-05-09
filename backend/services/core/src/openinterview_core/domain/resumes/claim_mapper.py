@@ -9,8 +9,14 @@ import json
 from typing import Protocol
 from uuid import UUID
 
-from openinterview_schemas import ChatMessage
+from openinterview_schemas import (
+    ChatMessage,
+    RetrieveRequest,
+    RetrievalPurpose,
+    RetrievalSource,
+)
 
+from ..retrieval import RetrievalService
 from .types import Claim, ResumeClaimMapping
 
 
@@ -29,16 +35,12 @@ class LLMClaimMapper(ClaimMapper):
         self,
         *,
         gateway,
-        embedder,
-        vector_store,
-        collection_for_project: callable,  # type: ignore[type-arg]
+        retrieval_service: RetrievalService,
         logical_model: str = "chat-fast",
         k: int = 6,
     ) -> None:
         self._gw = gateway
-        self._embedder = embedder
-        self._vec = vector_store
-        self._coll_fn = collection_for_project
+        self._retrieval = retrieval_service
         self._model = logical_model
         self._k = k
 
@@ -46,31 +48,44 @@ class LLMClaimMapper(ClaimMapper):
         if not claims or not project_ids:
             return []
 
-        # Embed all claim texts in one call.
-        embeddings = await self._embedder.embed(
-            user_id=user_id, texts=[c.text for c in claims]
-        )
-
         out: list[ResumeClaimMapping] = []
-        for claim, vec in zip(claims, embeddings, strict=True):
+        for claim in claims:
             best_evidence: list[dict] = []
             best_pid: str | None = None
-            for pid in project_ids:
-                coll = self._coll_fn(str(user_id), str(pid))
-                matches = await self._vec.query(collection=coll, embedding=vec, k=self._k)
-                if matches:
-                    if not best_evidence or matches[0].score > best_evidence[0].get("score", 0):
-                        best_pid = str(pid)
-                        best_evidence = [
-                            {
-                                "rel_path": m.metadata.get("rel_path", ""),
-                                "start_line": m.metadata.get("start_line"),
-                                "end_line": m.metadata.get("end_line"),
-                                "score": m.score,
-                                "snippet": m.text[:600],
-                            }
-                            for m in matches
-                        ]
+            retrieved = await self._retrieval.retrieve(
+                RetrieveRequest(
+                    user_id=user_id,
+                    query=claim.text,
+                    purpose=RetrievalPurpose.claim_mapping,
+                    sources=[RetrievalSource.project],
+                    project_ids=project_ids,
+                    top_k=max(self._k * max(1, len(project_ids)), self._k),
+                    per_source_top_k={"project": self._k},
+                    context_char_budget=6000,
+                )
+            )
+            by_project: dict[str, list] = {}
+            for chunk in retrieved.chunks:
+                pid = chunk.citation.project_id
+                if pid is None:
+                    continue
+                by_project.setdefault(str(pid), []).append(chunk)
+            for pid, chunks in by_project.items():
+                chunks.sort(key=lambda c: c.score, reverse=True)
+                if chunks and (
+                    not best_evidence or chunks[0].score > best_evidence[0].get("score", 0)
+                ):
+                    best_pid = pid
+                    best_evidence = [
+                        {
+                            "rel_path": c.citation.rel_path or "",
+                            "start_line": c.citation.start_line,
+                            "end_line": c.citation.end_line,
+                            "score": c.score,
+                            "snippet": c.text[:600],
+                        }
+                        for c in chunks[: self._k]
+                    ]
             confidence = await self._judge(user_id, claim.text, best_evidence)
             out.append(
                 ResumeClaimMapping(

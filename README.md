@@ -167,6 +167,26 @@ linked to project code with confidence scores.
 <tr>
 <td width="50%" valign="top">
 
+### 🔎 Retrieval boundary
+In-process RAG service in Core with shared DTOs, source adapters,
+dedupe, citations, and token-budgeted context assembly. `/chat`,
+Mentor, Interviewer, QA generation, and resume claim mapping all call
+through the same retrieval boundary.
+
+</td>
+<td width="50%" valign="top">
+
+### 🗂️ Common KB admin
+Admin-managed spaces, uploads, sources, extracted items, and
+embeddings. Documents are assigned to a target space at upload time;
+delete and batch delete hard-remove the document row, extracted items,
+vector records, and stored blob where available.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
 ### 💬 WhatsApp plugin
 Pair your **personal** number (no business API) by scanning
 a QR in **Settings → Messaging**. From your phone:
@@ -212,6 +232,7 @@ mediated delivery with chunking + dedup.
 │  domain/ ─ projects (chunker, embedder, summarizer)      │
 │            resumes (parser, claim grounder)              │
 │            qa (planner, shard generator, merger)         │
+│            retrieval (shared RAG boundary + adapters)    │
 │            mentor (LangGraph + ProjectFs tools)          │
 │            interviewer (LangGraph + picker + evaluator)  │
 │            memory (recall + distiller)                   │
@@ -409,7 +430,8 @@ cd frontend/app && npx tsc --noEmit && npx vite build
 
 Current coverage includes focused suites for core agent flows, gateway model
 routing and realtime session minting, realtime live-session turn aggregation
-and speaker gating, and a typecheck-clean Vite build.
+and speaker gating, retrieval source merging/isolation, Common KB document
+deletion, and a typecheck-clean Vite build.
 
 ---
 
@@ -424,9 +446,10 @@ and speaker gating, and a typecheck-clean Vite build.
 | **M4** Mentor mode | ✅ | LangGraph + 3-layer memory + ProjectFs tools (`list_dir` / `read_file` / `grep` / `tree`) |
 | **M5** Interviewer mode | ✅ | Gap-aware picker, per-turn eval, final rubric, evaluation page |
 | **M6** Memory | ✅ | Working / episodic / long-term, distilled at session end, vector-recalled |
+| **RAG** Retrieval boundary | ✅ | In-process `RetrievalService` shared by chat, Mentor, Interviewer, QA generation, and resume claim mapping |
 | **Audio** | ✅ | Voice input in chat + multimodal delivery scoring rolled into evaluation |
 | **M7** Messenger SDK | ✅ | Plugin SDK + WhatsApp via Baileys sidecar (groups; commands; rate-limit; echo-suppression) |
-| **M8** Common KB | 🚧 | Applied-AI question bank + system-design primer seeds |
+| **M8** Common KB | ✅ | Admin spaces/sources/uploads, extracted items, embeddings, document hard delete + batch delete |
 | **M9** Per-user model picks | ✅ | Settings → Models with live `/v1/models` discovery, per-role override, Test before Save; reasoning-model param auto-translation |
 | **M10** Public resources | 🚧 | LeetCode-tagged questions, system design primer, Designing Data-Intensive Apps notes — see [`docs/TODO.md`](docs/TODO.md) |
 | **M11** WhatsApp DMs | 🚧 | Self-DM and direct-message inbound; currently surfaced as "Unavailable" — see [`docs/TODO.md`](docs/TODO.md) |

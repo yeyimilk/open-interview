@@ -300,6 +300,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     except Exception as e:
         log.warning("vector_store_fallback_inmemory", error=str(e))
 
+    from .domain.retrieval import InProcessRetrievalService
+
+    class _AppRetrievalService:
+        async def retrieve(self, request):
+            service = InProcessRetrievalService(
+                sessionmaker=sm,
+                gateway=app.state.gateway,
+                vector_store=app.state.vector_store,
+            )
+            return await service.retrieve(request)
+
+    app.state.retrieval_service = _AppRetrievalService()
+
     return app
 
 

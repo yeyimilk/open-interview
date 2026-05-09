@@ -14,11 +14,11 @@ from uuid import UUID
 from langgraph.graph import END, START, StateGraph
 
 from openinterview_schemas import ChatMessage as ChatMessageDTO
+from openinterview_schemas import RetrieveRequest, RetrievalPurpose, RetrievalSource
 
 from ...infra.db.qa_repository import SqlQARepository
-from ...infra.db.chat_repository import SqlChatRepository
-from ..memory.recall import MemoryRetriever
-from ..kb import CommonKBRetriever
+from ..memory.recall import RecalledLongTerm
+from ..retrieval import RetrievalService
 from .picker import _claim_signature, pick_next
 
 
@@ -41,14 +41,12 @@ class InterviewerAgent:
         *,
         sessionmaker,
         gateway,
-        retriever: MemoryRetriever,
-        common_kb: CommonKBRetriever | None = None,
+        retrieval_service: RetrievalService,
         chat_logical_model: str = "chat-fast",
     ) -> None:
         self._sm = sessionmaker
         self._gw = gateway
-        self._retriever = retriever
-        self._common = common_kb
+        self._retrieval = retrieval_service
         self._model = chat_logical_model
         self._graph = self._build_graph()
 
@@ -79,10 +77,15 @@ class InterviewerAgent:
                     evaluation = {}
 
             # 2) Pick the next question.
-            recalled = await self._retriever.recall(
-                user_id=state["user_id"],
-                session_id=state.get("session_id"),
-                query="interview gaps and strengths",
+            retrieved = await self._retrieval.retrieve(
+                RetrieveRequest(
+                    user_id=state["user_id"],
+                    session_id=state.get("session_id"),
+                    query="interview gaps and strengths",
+                    purpose=RetrievalPurpose.interviewer,
+                    sources=[RetrievalSource.long_term_memory],
+                    top_k=6,
+                )
             )
             async with self._sm() as s:
                 items = await SqlQARepository(s).list_items(
@@ -92,7 +95,7 @@ class InterviewerAgent:
             pick = pick_next(
                 items=items,
                 asked_question_ids=asked,
-                long_term=recalled.long_term,
+                long_term=_long_term_from_chunks(retrieved.chunks),
             )
 
             if pick is None:
@@ -271,16 +274,21 @@ class InterviewerAgent:
                 evaluation = {}
 
         # Pick next question (local)
-        recalled = await self._retriever.recall(
-            user_id=user_id,
-            session_id=session_id,
-            query="interview gaps and strengths",
+        retrieved = await self._retrieval.retrieve(
+            RetrieveRequest(
+                user_id=user_id,
+                session_id=session_id,
+                query="interview gaps and strengths",
+                purpose=RetrievalPurpose.interviewer,
+                sources=[RetrievalSource.long_term_memory],
+                top_k=6,
+            )
         )
         async with self._sm() as s:
             items = await SqlQARepository(s).list_items(
                 user_id=user_id, qa_set_id=qa_set_id
             )
-        if blueprint and self._common is not None:
+        if blueprint:
             common_items = await self._common_candidates(
                 user_id=user_id,
                 query=_common_query(
@@ -300,7 +308,7 @@ class InterviewerAgent:
         pick = pick_next(
             items=items,
             asked_question_ids=asked,
-            long_term=recalled.long_term,
+            long_term=_long_term_from_chunks(retrieved.chunks),
             recent_claims=recent_dq,
             category_weights=(blueprint or {}).get("category_weights") if blueprint else None,
         )
@@ -398,8 +406,6 @@ class InterviewerAgent:
         }
 
     async def _common_candidates(self, *, user_id: UUID, query: str, blueprint: dict) -> list:
-        if self._common is None:
-            return []
         weights = blueprint.get("category_weights") or {}
         categories = [
             k for k, _ in sorted(weights.items(), key=lambda kv: float(kv[1] or 0), reverse=True)
@@ -407,16 +413,21 @@ class InterviewerAgent:
         ][:5]
         company = blueprint.get("target_company") if blueprint.get("include_company_style", True) else None
         languages = blueprint.get("languages") or []
-        matches = await self._common.retrieve(
-            user_id=user_id,
-            query=query,
-            categories=categories or None,
-            company=company,
-            languages=languages or None,
-            k=8,
+        retrieved = await self._retrieval.retrieve(
+            RetrieveRequest(
+                user_id=user_id,
+                query=query,
+                purpose=RetrievalPurpose.interviewer,
+                sources=[RetrievalSource.common_kb],
+                categories=categories or None,
+                company=company,
+                languages=languages or None,
+                top_k=8,
+                per_source_top_k={"common_kb": 8},
+            )
         )
         out = []
-        for m in matches:
+        for m in retrieved.chunks:
             try:
                 mid = UUID(m.id)
             except ValueError:
@@ -426,16 +437,16 @@ class InterviewerAgent:
             out.append(
                 SimpleNamespace(
                     id=mid,
-                    category=m.category,
+                    category=str(m.metadata.get("category") or "general"),
                     difficulty=3,
                     question=q,
                     ideal_answer=answer,
                     meta={
                         "source": "common",
-                        "source_label": m.source,
-                        "company": m.company,
-                        "language": m.language,
-                        "tags": m.tags,
+                        "source_label": m.metadata.get("source") or "common",
+                        "company": m.metadata.get("company"),
+                        "language": m.metadata.get("language"),
+                        "tags": m.metadata.get("tags") or [],
                     },
                 )
             )
@@ -481,3 +492,19 @@ def _answer_from_match(match) -> str:
     if text:
         return text[:1500]
     return "A strong answer should cover the approach, trade-offs, edge cases, and level-appropriate depth."
+
+
+def _long_term_from_chunks(chunks) -> list[RecalledLongTerm]:
+    out: list[RecalledLongTerm] = []
+    for c in chunks:
+        if c.source != RetrievalSource.long_term_memory:
+            continue
+        out.append(
+            RecalledLongTerm(
+                id=c.id,
+                kind=str(c.metadata.get("kind") or c.title or "fact"),
+                content=c.text,
+                score=c.score,
+            )
+        )
+    return out

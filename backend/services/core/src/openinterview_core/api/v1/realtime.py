@@ -25,8 +25,6 @@ from openinterview_db import User
 from openinterview_schemas import ChatMessageOut
 
 from ...domain.interviewer import InterviewerAgent
-from ...domain.memory import MemoryRetriever
-from ...domain.projects.embedder import GatewayEmbedder
 from ...infra.db import get_session_dep
 from ...infra.db.chat_repository import SqlChatRepository
 from ..deps import get_current_user
@@ -82,22 +80,12 @@ class _InternalTurnBody(BaseModel):
     voice: dict | None = None
 
 
-def _retriever(request: Request) -> MemoryRetriever:
-    sm: async_sessionmaker[AsyncSession] = request.app.state.db.sessionmaker
-    return MemoryRetriever(
-        sessionmaker=sm,
-        gateway=request.app.state.gateway,
-        embedder=GatewayEmbedder(request.app.state.gateway),
-        vector_store=request.app.state.vector_store,
-    )
-
-
 def _agent(request: Request) -> InterviewerAgent:
     sm: async_sessionmaker[AsyncSession] = request.app.state.db.sessionmaker
     return InterviewerAgent(
         sessionmaker=sm,
         gateway=request.app.state.gateway,
-        retriever=_retriever(request),
+        retrieval_service=request.app.state.retrieval_service,
     )
 
 

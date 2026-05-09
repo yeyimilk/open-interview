@@ -1,5 +1,5 @@
 import { ArrowLeft, FileText, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { CommonKBDocumentOut, CommonKBSpaceOut, api } from "../../api/client";
@@ -36,6 +36,11 @@ export function AdminKBDocumentsPage() {
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingSelected, setDeletingSelected] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const allVisibleSelected = docs.length > 0 && docs.every((doc) => selectedSet.has(doc.id));
 
   async function loadDocuments(nextSpace = space, nextStatus = status) {
     if (!user?.is_admin) return;
@@ -51,6 +56,10 @@ export function AdminKBDocumentsPage() {
       ]);
       setSpaces(sp);
       setDocs(ds);
+      setSelectedIds((prev) => {
+        const visible = new Set(ds.map((doc) => doc.id));
+        return prev.filter((id) => visible.has(id));
+      });
     } catch (e) {
       toast.error("Failed to load documents", {
         description: (e as Error).message,
@@ -74,12 +83,53 @@ export function AdminKBDocumentsPage() {
     try {
       await api.adminDeleteDocument(doc.id);
       setDocs((prev) => prev.filter((d) => d.id !== doc.id));
+      setSelectedIds((prev) => prev.filter((id) => id !== doc.id));
       toast.success("Document deleted");
     } catch (e) {
       toast.error("Delete failed", { description: (e as Error).message });
     } finally {
       setDeletingId(null);
     }
+  }
+
+  async function deleteSelectedDocuments() {
+    const ids = Array.from(new Set(selectedIds));
+    if (ids.length === 0) return;
+    const confirmed = window.confirm(
+      `Delete ${ids.length} selected document${ids.length === 1 ? "" : "s"} and all extracted KB items from them?`
+    );
+    if (!confirmed) return;
+    setDeletingSelected(true);
+    try {
+      const result = await api.adminDeleteDocuments(ids);
+      const deleted = new Set(result.deleted_ids);
+      const missing = new Set(result.missing_ids);
+      setDocs((prev) => prev.filter((doc) => !deleted.has(doc.id) && !missing.has(doc.id)));
+      setSelectedIds((prev) => prev.filter((id) => !deleted.has(id) && !missing.has(id)));
+      toast.success("Documents deleted", {
+        description:
+          result.missing_ids.length > 0
+            ? `${result.deleted_ids.length} deleted, ${result.missing_ids.length} already missing.`
+            : `${result.deleted_ids.length} deleted.`,
+      });
+    } catch (e) {
+      toast.error("Batch delete failed", { description: (e as Error).message });
+    } finally {
+      setDeletingSelected(false);
+    }
+  }
+
+  function toggleDocument(id: string, checked: boolean) {
+    setSelectedIds((prev) => {
+      if (checked) {
+        return prev.includes(id) ? prev : [...prev, id];
+      }
+      return prev.filter((selectedId) => selectedId !== id);
+    });
+  }
+
+  function toggleVisibleDocuments(checked: boolean) {
+    setSelectedIds(checked ? docs.map((doc) => doc.id) : []);
   }
 
   if (!user?.is_admin) {
@@ -104,6 +154,14 @@ export function AdminKBDocumentsPage() {
                 <ArrowLeft className="h-4 w-4" /> Upload
               </Link>
             </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void deleteSelectedDocuments()}
+              disabled={selectedIds.length === 0 || deletingSelected}
+            >
+              <Trash2 className="h-4 w-4" /> Delete selected
+              {selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}
+            </Button>
             <Button variant="outline" onClick={() => void loadDocuments()} disabled={loading}>
               <RefreshCw className="h-4 w-4" /> Refresh
             </Button>
@@ -112,7 +170,7 @@ export function AdminKBDocumentsPage() {
       />
 
       <Card>
-        <CardContent className="grid gap-3 p-4 md:grid-cols-[220px_180px_auto]">
+        <CardContent className="grid gap-3 p-4 md:grid-cols-[220px_180px_auto_1fr]">
           <div className="space-y-2">
             <Label>Space</Label>
             <Select
@@ -155,6 +213,11 @@ export function AdminKBDocumentsPage() {
               Apply filters
             </Button>
           </div>
+          <div className="flex items-end text-sm text-muted-foreground">
+            {selectedIds.length > 0
+              ? `${selectedIds.length} selected`
+              : `${docs.length} document${docs.length === 1 ? "" : "s"} loaded`}
+          </div>
         </CardContent>
       </Card>
 
@@ -163,6 +226,15 @@ export function AdminKBDocumentsPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all loaded documents"
+                    checked={allVisibleSelected}
+                    disabled={docs.length === 0 || deletingSelected}
+                    onChange={(e) => toggleVisibleDocuments(e.target.checked)}
+                  />
+                </TableHead>
                 <TableHead>Document</TableHead>
                 <TableHead>Tags</TableHead>
                 <TableHead>Status</TableHead>
@@ -173,7 +245,16 @@ export function AdminKBDocumentsPage() {
             </TableHeader>
             <TableBody>
               {docs.map((doc) => (
-                <TableRow key={doc.id}>
+                <TableRow key={doc.id} data-state={selectedSet.has(doc.id) ? "selected" : undefined}>
+                  <TableCell>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${doc.title}`}
+                      checked={selectedSet.has(doc.id)}
+                      disabled={deletingSelected || deletingId === doc.id}
+                      onChange={(e) => toggleDocument(doc.id, e.target.checked)}
+                    />
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-start gap-2">
                       <FileText className="mt-0.5 h-4 w-4 text-muted-foreground" />
@@ -208,7 +289,7 @@ export function AdminKBDocumentsPage() {
                     <Button
                       size="sm"
                       variant="destructive"
-                      disabled={deletingId === doc.id}
+                      disabled={deletingId === doc.id || deletingSelected}
                       onClick={() => void deleteDocument(doc)}
                     >
                       <Trash2 className="h-4 w-4" /> Delete
@@ -218,7 +299,7 @@ export function AdminKBDocumentsPage() {
               ))}
               {docs.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
                     No documents match the current filters.
                   </TableCell>
                 </TableRow>

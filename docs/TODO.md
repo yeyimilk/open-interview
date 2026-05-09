@@ -4,7 +4,7 @@ Active backlog of work items that didn't fit in the current iteration.
 Items are grouped by theme, then sized roughly. Anything you want to
 pick up, open an issue first so we can discuss the shape before code.
 
-Last updated: 2026-05-07
+Last updated: 2026-05-09
 
 ---
 
@@ -93,6 +93,14 @@ against the user's own code. Add a curated **common KB** so they can
 also reference industry-standard material when the user asks
 "explain B-trees" or "give me a system design walk-through".
 
+Common KB infrastructure is implemented in Core: admins can create
+spaces/sources, upload single documents or folders into a chosen space,
+process extracted items, review documents/items on focused pages, and hard
+delete documents individually or in batches. Deleting a document removes the
+document row, extracted items/tags, common-KB vector records, and the stored
+blob on a best-effort basis. The remaining work in this section is content
+quality, sourcing, attribution, and refresh automation.
+
 ### 2.1 LeetCode question pack  ⏱ medium
 
 **Scope:**
@@ -145,41 +153,40 @@ target positions.
 
 ## 3. Retrieval and RAG architecture
 
-### 3.1 Standalone retrieval / RAG service boundary  ⏱ large
+### 3.1 Standalone retrieval / RAG service boundary  ✅ first slice done
 
-**Problem.** Retrieval is becoming a platform capability, not just a helper
-inside Mentor or Interviewer. Today project chunks, resume claims, generated
-QA, common KB, and long-term memory are retrieved through several in-process
-paths (`MemoryRetriever`, `CommonKBRetriever`, project vector collections,
-claim mapping, mentor/interviewer-specific prompts). As the number of sources
-grows, ranking, filtering, citations, permissions, and evaluation will become
-hard to reason about if they stay scattered across Core domain code.
+Core now has an in-process retrieval boundary under
+`openinterview_core/domain/retrieval/` with shared schemas in
+`openinterview_schemas/retrieval.py`. Existing callers are routed through the
+boundary: `/chat`, Mentor, Interviewer, QA generation, and resume claim
+mapping. The first slice keeps Chroma, collection naming, embeddings, and
+persisted artifacts unchanged.
 
-**Target shape.** Create a dedicated retrieval boundary first, then decide
-whether to deploy it as a separate process once the contract stabilizes.
-The boundary should own:
+Implemented responsibilities:
 - Source adapters for project code chunks, resume claims, generated QA,
-  common KB, chat history, episodic memory, long-term memory, and future
-  curated learning resources.
-- Query planning: source selection, per-source top-k, filters, recency,
-  role/session context, and user/project permissions.
-- Ranking and merging: hybrid scoring, reranking, dedupe, citation packing,
-  token-budget aware context assembly.
-- Retrieval observability: query, selected sources, scores, rejected matches,
-  latency, and prompt context size.
-- Evaluation fixtures for recall/precision against known project/resume
-  questions.
+  common KB, working memory, episodic memory, and long-term memory.
+- Query planning: source selection, per-source top-k, filters, workspace-wide
+  project selection, and user/project permissions.
+- Ranking and merging: score sorting, dedupe, citation packing, snippet
+  truncation, and token-budget aware context assembly.
+- Retrieval observability: purpose, selected sources, counts, latency, and
+  context budget approximation.
+- Golden-style unit coverage for project chunks, resume claim evidence,
+  common-KB SQL fallback, mixed workspace retrieval, and isolation.
 
-**First slice.**
-- Define a `RetrievalService` interface and DTOs in shared schemas:
-  `RetrieveRequest`, `RetrieveResponse`, `RetrievedChunk`, `Citation`.
-- Move existing retrieval call sites behind that interface without changing
-  behavior.
-- Keep implementation in-process initially; expose HTTP only after Mentor,
-  Interviewer, resume claim mapping, and general chat are all using the same
-  boundary.
-- Add a small golden test set: project-specific question, resume claim
-  grounding question, common-KB question, and mixed query.
+Remaining follow-ups:
+- Decide whether this boundary should become a separate process after the
+  contract stabilizes.
+- Add hybrid scoring/reranking once the first retrieval metrics show where it
+  matters.
+- Add broader production evaluation fixtures for recall/precision against
+  known project/resume questions.
+
+Original target shape retained for future hardening:
+- Source adapters for future curated learning resources.
+- Query planning with richer recency and role/session policies.
+- Ranking and merging: hybrid scoring, reranking, richer citation packing,
+  token-budget aware context assembly.
 
 **Non-goals for first slice.**
 - New vector database.
@@ -187,12 +194,11 @@ The boundary should own:
 - Making retrieval provider-neutral across all embedding vendors before the
   source/ranking contract is proven.
 
-### 3.2 Workspace-wide RAG for `/chat`  ⏱ medium
+### 3.2 Workspace-wide RAG for `/chat`  ✅ first slice done
 
-Current `/chat` mode hits per-user memory but not project chunks.
-Implement a fan-out retriever: top-k chunks from each project (k=2),
-plus resume parsed text, re-ranked by score. Stream into the system
-prompt of `general_stream`.
+`/chat` now calls `RetrievalService` for workspace-wide context across ready
+projects, resumes, common KB, generated QA, and memory, then injects compact
+retrieval context into `general_stream`.
 
 ### 3.3 Long-term memory pinning  ⏱ small
 

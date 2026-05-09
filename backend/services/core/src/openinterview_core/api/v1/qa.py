@@ -29,6 +29,7 @@ def _service(request: Request) -> QAGenerationService:
         sessionmaker=sm,
         gateway=request.app.state.gateway,
         vector_store=request.app.state.vector_store,
+        retrieval_service=request.app.state.retrieval_service,
     )
 
 

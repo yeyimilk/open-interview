@@ -30,6 +30,7 @@ from ..projects import (
 )
 from ..projects.embedder import GatewayEmbedder
 from ..projects.pipeline import IngestStatusReporter
+from ..retrieval import InProcessRetrievalService
 from ..resumes import (
     LLMClaimMapper,
     LLMResumeParser,
@@ -66,6 +67,12 @@ class IngestionRunner:
         self._gw = gateway
         self._chat_model = chat_logical_model
         self._embed_model = embed_logical_model
+        self._retrieval = InProcessRetrievalService(
+            sessionmaker=sessionmaker,
+            gateway=gateway,
+            vector_store=vector_store,
+            embed_logical_model=embed_logical_model,
+        )
 
     # ------------ project ------------
 
@@ -135,6 +142,7 @@ class IngestionRunner:
                 sessionmaker=self._sm,
                 gateway=self._gw,
                 vector_store=self._vec,
+                retrieval_service=self._retrieval,
                 chat_logical_model=self._chat_model,
                 embed_logical_model=self._embed_model,
             )
@@ -215,12 +223,9 @@ class IngestionRunner:
 
         await reporter.report(step="ground_claims", progress=60)
 
-        embedder = GatewayEmbedder(self._gw, logical_model=self._embed_model)
         mapper = LLMClaimMapper(
             gateway=self._gw,
-            embedder=embedder,
-            vector_store=self._vec,
-            collection_for_project=vector_collection_for_user_project,
+            retrieval_service=self._retrieval,
             logical_model=self._chat_model,
         )
         try:
